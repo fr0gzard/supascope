@@ -4,7 +4,7 @@ SupaScope is an authorized Supabase security reconnaissance scanner for detectin
 
 ## Status
 
-Go implementation in progress. The current implementation supports static public URL scans, local folder scans, recursive same-origin asset discovery, Supabase URL/key/endpoint detection, key classification, secret masking, active service checks, JSON reports, and Markdown reports.
+Go implementation in progress. The current implementation supports static public URL scans, local folder scans, recursive same-origin asset discovery, Supabase URL/key/endpoint detection, key classification, safe JWT metadata reporting, secret masking, active service checks, JSON reports, and Markdown reports.
 
 ## Usage
 
@@ -39,6 +39,17 @@ Provide exactly one target:
 - `--header "Name: value"` adds a remote HTTP request header. Repeat it for multiple headers.
 - `--max-assets n` limits recursive same-origin asset fetching during URL scans.
 - `--debug` prints request diagnostics to stderr.
+
+## Key And JWT Reporting
+
+Detected secrets are masked in discoveries, findings, and evidence snippets. JWT-like Supabase keys are decoded only for safe, non-secret metadata used in report evidence:
+
+- role
+- issuer
+- expiry timestamp
+- Supabase project ref when inferable
+
+JWT metadata is decoded without signature verification and is used only to classify/report exposed artifacts. Raw token values are not printed in reports.
 
 ## Active Checks
 

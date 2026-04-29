@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -127,6 +128,51 @@ func TestActiveChecksGenerateServiceStatusFindings(t *testing.T) {
 	if hasFinding(result.Findings, "SUPA-ACTIVE-REALTIME-INFO-001") {
 		t.Fatal("did not expect not_found realtime active finding")
 	}
+}
+
+func TestJWTFindingIncludesSafeMetadata(t *testing.T) {
+	dir := t.TempDir()
+	jwt := scannerTestJWT(map[string]any{
+		"role": "service_role",
+		"iss":  "https://abcxyz.supabase.co/auth/v1",
+		"exp":  float64(1893456000),
+	})
+	if err := os.WriteFile(filepath.Join(dir, "app.js"), []byte("const key = '"+jwt+"';"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := New().Scan(context.Background(), model.Options{
+		Target: model.Target{Type: model.TargetLocalPath, Value: dir},
+		Yes:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var detail string
+	for _, finding := range result.Findings {
+		if finding.ID == "SUPA-KEY-CRIT-002" {
+			detail = finding.Evidence.Detail
+			break
+		}
+	}
+	for _, want := range []string{"role: service_role", "project_ref: abcxyz", "expiry: 2030-01-01T00:00:00Z"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("detail = %q, want to contain %q", detail, want)
+		}
+	}
+	if strings.Contains(detail, jwt) {
+		t.Fatal("finding detail contains raw JWT")
+	}
+}
+
+func scannerTestJWT(claims map[string]any) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		panic(err)
+	}
+	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
 }
 
 func hasFinding(findings []model.Finding, id string) bool {

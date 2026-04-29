@@ -12,6 +12,7 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
 - Final URL handling after redirects for correct same-origin asset resolution.
 - Supabase project URL, endpoint, publishable key, secret key, legacy JWT, and database URL detection.
 - Key classification for publishable keys, secret keys, legacy anon JWTs, legacy service-role JWTs, database URLs, and unknown JWTs.
+- Safe JWT report metadata for role, issuer, expiry, and project ref when inferable.
 - Secret masking in reports.
 - JSON and Markdown reports.
 - Custom remote request controls:
@@ -125,31 +126,8 @@ This passes as of this progress note.
 
 High-value next steps:
 
-- Update `README.md` for new flags:
-  - `--active-checks`
-  - `--active-storage-tests`
-  - `--user-agent`
-  - `--header`
-  - `--max-assets`
-  - `--debug`
-- Improve JWT report detail by decoding safe metadata:
-  - role
-  - issuer
-  - expiry
-  - project ref when available
 - Add optional GraphQL introspection behind a separate explicit flag.
 - Add source map expansion and scanning beyond referenced `.map` assets.
 - Add dynamic browser network discovery later, probably with `chromedp` or Playwright.
 - Add HAR import support.
-- Fix `--output` behavior so `--json --output file` writes JSON instead of always Markdown.
 - Add rate limiting/pacing options, e.g. `--delay` and `--max-concurrency`.
-
-## Git Note
-
-Changes are staged but not committed because Git author identity is not configured in this repo/session.
-
-Suggested conventional commit message:
-
-```text
-feat: add active Supabase checks and scan controls
-```

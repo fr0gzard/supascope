@@ -40,7 +40,7 @@ func (s Scanner) Scan(ctx context.Context, opts model.Options) (model.Report, er
 
 	if opts.Key != "" {
 		classified := keyclass.Classify(opts.Key)
-		ev := model.Evidence{Source: "provided", MaskedValue: classified.MaskedValue, Detail: classified.Type}
+		ev := model.Evidence{Source: "provided", MaskedValue: classified.MaskedValue, Detail: classified.Detail}
 		discoveries = append(discoveries, model.Discovery{Type: "key", Value: opts.Key, MaskedValue: classified.MaskedValue, Source: "provided", Evidence: &ev})
 	}
 
@@ -269,9 +269,11 @@ func discoveriesToFindings(discoveries []model.Discovery) []model.Finding {
 				title += " in " + source.label
 				category = source.category
 			}
+			evidence := evidenceOrDefault(discovery)
+			evidence.Detail = classified.Detail
 			findings = append(findings, model.Finding{
 				ID: classified.FindingID, Title: title, Severity: classified.Severity, Category: category,
-				Evidence: evidenceOrDefault(discovery),
+				Evidence: evidence,
 				Impact:   classified.Impact, Recommendation: classified.Recommendation, Confidence: classified.Confidence,
 			})
 		case "endpoint":
