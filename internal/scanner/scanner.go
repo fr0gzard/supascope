@@ -50,7 +50,9 @@ func (s Scanner) Scan(ctx context.Context, opts model.Options) (model.Report, er
 	services := fingerprintServices(discoveries)
 	activeServices := emptyServiceMap()
 	if opts.ActiveChecks {
-		activeServices = activeServiceChecks(ctx, discoveries, opts)
+		activeDiscoveries := []model.Discovery{}
+		activeServices, activeDiscoveries = activeServiceChecks(ctx, discoveries, opts)
+		discoveries = dedupeDiscoveries(append(discoveries, activeDiscoveries...))
 		services = mergeServiceMaps(services, activeServices)
 	}
 	findings := discoveriesToFindings(discoveries)
@@ -231,23 +233,27 @@ func restCheckMissing(opts model.Options, status model.ServiceStatus) bool {
 	return true
 }
 
-func activeServiceChecks(ctx context.Context, discoveries []model.Discovery, opts model.Options) model.ServiceMap {
+func activeServiceChecks(ctx context.Context, discoveries []model.Discovery, opts model.Options) (model.ServiceMap, []model.Discovery) {
 	services := emptyServiceMap()
+	var activeDiscoveries []model.Discovery
 	key := activeKey(discoveries, opts.Key)
 	for _, projectURL := range supabaseProjectURLs(discoveries, opts.Target) {
-		probed, err := engine.ProbeProjectServices(ctx, projectURL, engine.ActiveOptions{
+		probed, disc, err := engine.ProbeProjectServices(ctx, projectURL, engine.ActiveOptions{
 			UserAgent:          opts.UserAgent,
 			Headers:            opts.Headers,
 			Key:                key,
 			Debug:              opts.Debug,
 			ActiveStorageTests: opts.ActiveStorageTests,
+			Delay:              opts.Delay,
+			MaxConcurrency:     opts.MaxConcurrency,
 		})
 		if err != nil {
 			continue
 		}
 		services = mergeServiceMaps(services, probed)
+		activeDiscoveries = append(activeDiscoveries, disc...)
 	}
-	return services
+	return services, activeDiscoveries
 }
 
 func emptyServiceMap() model.ServiceMap {

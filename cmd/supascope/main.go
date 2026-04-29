@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"supascope/internal/model"
 	"supascope/internal/report"
@@ -38,6 +39,8 @@ func main() {
 	activeStorage := fs.Bool("active-storage-tests", false, "enable active storage tests")
 	graphqlIntrospection := fs.Bool("graphql-introspection", false, "enable GraphQL introspection probe")
 	graphqlSchemaOutput := fs.String("graphql-schema-output", "", "write GraphQL introspection response to a text file")
+	delay := fs.Duration("delay", 0, "delay between active probes (e.g. 500ms)")
+	maxConcurrency := fs.Int("max-concurrency", 4, "maximum concurrent active probes")
 
 	if err := fs.Parse(normalizeScanArgs(os.Args[2:])); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -69,6 +72,8 @@ func main() {
 		ActiveStorageTests:   *activeStorage,
 		GraphQLIntrospection: *graphqlIntrospection,
 		GraphQLSchemaOutput:  *graphqlSchemaOutput,
+		Delay:                *delay,
+		MaxConcurrency:       *maxConcurrency,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -127,6 +132,8 @@ func normalizeScanArgs(args []string) []string {
 		"--user-agent":            true,
 		"--header":                true,
 		"--max-assets":            true,
+		"--delay":                 true,
+		"--max-concurrency":       true,
 		"--output":                true,
 		"--graphql-schema-output": true,
 	}
@@ -206,6 +213,8 @@ type scanConfig struct {
 	ActiveStorageTests   bool
 	GraphQLIntrospection bool
 	GraphQLSchemaOutput  string
+	Delay                time.Duration
+	MaxConcurrency       int
 }
 
 func scanOptions(config scanConfig) (model.Options, error) {
@@ -254,6 +263,8 @@ func scanOptions(config scanConfig) (model.Options, error) {
 		ActiveStorageTests:   config.ActiveStorageTests,
 		GraphQLIntrospection: config.GraphQLIntrospection,
 		GraphQLSchemaOutput:  config.GraphQLSchemaOutput,
+		Delay:                config.Delay,
+		MaxConcurrency:       config.MaxConcurrency,
 	}, nil
 }
 

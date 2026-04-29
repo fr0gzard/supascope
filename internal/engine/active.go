@@ -20,6 +20,9 @@ type ActiveOptions struct {
 	Key                string
 	Debug              bool
 	ActiveStorageTests bool
+	// Pacing controls for active probes
+	Delay          time.Duration
+	MaxConcurrency int
 }
 
 type GraphQLIntrospectionResult struct {
@@ -29,54 +32,127 @@ type GraphQLIntrospectionResult struct {
 	Response   string
 }
 
-func ProbeProjectServices(ctx context.Context, projectURL string, opts ActiveOptions) (model.ServiceMap, error) {
+func ProbeProjectServices(ctx context.Context, projectURL string, opts ActiveOptions) (model.ServiceMap, []model.Discovery, error) {
 	base, err := url.Parse(projectURL)
 	if err != nil {
-		return model.ServiceMap{}, err
+		return model.ServiceMap{}, nil, err
 	}
 	if base.Scheme == "" || base.Host == "" {
-		return model.ServiceMap{}, fmt.Errorf("invalid Supabase project URL: %s", projectURL)
+		return model.ServiceMap{}, nil, fmt.Errorf("invalid Supabase project URL: %s", projectURL)
 	}
 	base.Path = ""
 	base.RawQuery = ""
 	base.Fragment = ""
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	probe := func(method, path string, body []byte) model.ServiceStatus {
-		target := base.ResolveReference(&url.URL{Path: path}).String()
-		req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
-		if err != nil {
-			debugActive(opts.Debug, "active request build failed: url=%s err=%v", target, err)
-			return model.ServiceUnknown
-		}
-		applyRequestHeaders(req, opts.UserAgent, opts.Headers)
-		if len(body) > 0 {
-			req.Header.Set("Content-Type", "application/json")
-		}
-		if opts.Key != "" {
-			req.Header.Set("apikey", opts.Key)
-			req.Header.Set("Authorization", "Bearer "+opts.Key)
-		}
 
-		resp, err := client.Do(req)
-		if err != nil {
-			debugActive(opts.Debug, "active fetch failed: url=%s err=%v", target, err)
-			return model.ServiceUnknown
-		}
-		defer resp.Body.Close()
-		debugActive(opts.Debug, "active response: method=%s url=%s status=%s", method, target, resp.Status)
-		return statusFromHTTP(resp.StatusCode)
+	type probeSpec struct {
+		name   string
+		method string
+		path   string
+		body   []byte
 	}
 
-	services := model.ServiceMap{
-		REST:      probe(http.MethodGet, "/rest/v1/", nil),
-		Auth:      probe(http.MethodGet, "/auth/v1/settings", nil),
-		Storage:   probe(http.MethodGet, storageProbePath(opts.ActiveStorageTests), nil),
-		Realtime:  probe(http.MethodGet, "/realtime/v1/", nil),
-		Functions: probe(http.MethodGet, "/functions/v1/", nil),
-		GraphQL:   probe(http.MethodPost, "/graphql/v1", []byte(`{"query":"query SupaScopeProbe { __typename }"}`)),
+	probes := []probeSpec{
+		{name: "REST", method: http.MethodGet, path: "/rest/v1/"},
+		{name: "Auth", method: http.MethodGet, path: "/auth/v1/settings"},
+		{name: "Storage", method: http.MethodGet, path: storageProbePath(opts.ActiveStorageTests)},
+		{name: "Realtime", method: http.MethodGet, path: "/realtime/v1/"},
+		{name: "Functions", method: http.MethodGet, path: "/functions/v1/"},
+		{name: "GraphQL", method: http.MethodPost, path: "/graphql/v1", body: []byte(`{"query":"query SupaScopeProbe { __typename }"}`)},
 	}
-	return services, nil
+
+	if opts.MaxConcurrency <= 0 {
+		opts.MaxConcurrency = 1
+	}
+	sem := make(chan struct{}, opts.MaxConcurrency)
+
+	type probeResult struct {
+		name   string
+		status model.ServiceStatus
+		disc   *model.Discovery
+	}
+	results := make(chan probeResult, len(probes))
+
+	launched := 0
+probeLoop:
+	for i, p := range probes {
+		select {
+		case <-ctx.Done():
+			break probeLoop
+		case sem <- struct{}{}:
+		}
+		launched++
+		go func(p probeSpec) {
+			defer func() { <-sem }()
+			target := base.ResolveReference(&url.URL{Path: p.path}).String()
+			req, err := http.NewRequestWithContext(ctx, p.method, target, bytes.NewReader(p.body))
+			if err != nil {
+				debugActive(opts.Debug, "active request build failed: url=%s err=%v", target, err)
+				results <- probeResult{p.name, model.ServiceUnknown, nil}
+				return
+			}
+			applyRequestHeaders(req, opts.UserAgent, opts.Headers)
+			if len(p.body) > 0 {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			if opts.Key != "" {
+				req.Header.Set("apikey", opts.Key)
+				req.Header.Set("Authorization", "Bearer "+opts.Key)
+			}
+
+			resp, err := client.Do(req)
+			if err != nil {
+				debugActive(opts.Debug, "active fetch failed: url=%s err=%v", target, err)
+				results <- probeResult{p.name, model.ServiceUnknown, nil}
+				return
+			}
+			defer resp.Body.Close()
+			debugActive(opts.Debug, "active response: method=%s url=%s status=%s", p.method, target, resp.Status)
+
+			bodySampleBytes, _ := io.ReadAll(io.LimitReader(resp.Body, int64(maxWAFBodySampleBytes)))
+			bodySample := string(bodySampleBytes)
+			blocked, detail := detectWAF(resp.StatusCode, resp.Header, bodySample)
+			var disc *model.Discovery
+			if blocked {
+				ev := model.Evidence{Source: "active_fetch", URL: target, Detail: detail, Snippet: wafBodySample(bodySample)}
+				disc = &model.Discovery{Type: "waf_block", Value: detail, Source: "active_fetch", Evidence: &ev}
+			}
+			results <- probeResult{p.name, statusFromHTTP(resp.StatusCode), disc}
+		}(p)
+
+		if opts.Delay > 0 && i < len(probes)-1 {
+			select {
+			case <-ctx.Done():
+				break probeLoop
+			case <-time.After(opts.Delay):
+			}
+		}
+	}
+
+	services := model.ServiceMap{REST: model.ServiceNotObserved, Auth: model.ServiceNotObserved, Storage: model.ServiceNotObserved, Realtime: model.ServiceNotObserved, Functions: model.ServiceNotObserved, GraphQL: model.ServiceNotObserved}
+	var discoveries []model.Discovery
+	for i := 0; i < launched; i++ {
+		res := <-results
+		switch res.name {
+		case "REST":
+			services.REST = res.status
+		case "Auth":
+			services.Auth = res.status
+		case "Storage":
+			services.Storage = res.status
+		case "Realtime":
+			services.Realtime = res.status
+		case "Functions":
+			services.Functions = res.status
+		case "GraphQL":
+			services.GraphQL = res.status
+		}
+		if res.disc != nil {
+			discoveries = append(discoveries, *res.disc)
+		}
+	}
+	return services, discoveries, nil
 }
 
 func ProbeGraphQLIntrospection(ctx context.Context, projectURL string, opts ActiveOptions) (GraphQLIntrospectionResult, error) {

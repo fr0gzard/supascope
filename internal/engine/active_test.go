@@ -38,7 +38,7 @@ func TestProbeProjectServicesClassifiesReadOnlyChecks(t *testing.T) {
 	}))
 	defer server.Close()
 
-	services, err := ProbeProjectServices(context.Background(), server.URL, ActiveOptions{
+	services, disc, err := ProbeProjectServices(context.Background(), server.URL, ActiveOptions{
 		Key:                "test-key",
 		ActiveStorageTests: true,
 	})
@@ -72,6 +72,16 @@ func TestProbeProjectServicesClassifiesReadOnlyChecks(t *testing.T) {
 	}
 	if services.GraphQL != model.ServiceReachable {
 		t.Fatalf("GraphQL = %q, want reachable", services.GraphQL)
+	}
+	if len(disc) > 0 {
+		// ensure any active discoveries are well-formed
+		for _, d := range disc {
+			if d.Type == "waf_block" && d.Evidence != nil {
+				if d.Evidence.Source != "active_fetch" {
+					t.Fatalf("unexpected evidence source: %s", d.Evidence.Source)
+				}
+			}
+		}
 	}
 }
 

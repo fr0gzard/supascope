@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 type TargetType string
 
 const (
@@ -80,6 +82,9 @@ type Options struct {
 	ActiveStorageTests   bool
 	GraphQLIntrospection bool
 	GraphQLSchemaOutput  string
+	// Pacing controls for active probes
+	Delay          time.Duration `json:"delay"`
+	MaxConcurrency int           `json:"max_concurrency"`
 }
 
 type Report struct {
