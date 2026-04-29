@@ -12,8 +12,8 @@ Go implementation in progress. The current implementation supports static public
 go test ./...
 go run ./cmd/supascope scan --path . --json
 go run ./cmd/supascope scan https://example.com --yes
-go run ./cmd/supascope scan https://example.com --yes --active-checks --json --output report.json
-go run ./cmd/supascope scan --supabase-url https://project-ref.supabase.co --key sb_publishable_xxx --graphql-introspection --graphql-schema-output schema.txt
+go run ./cmd/supascope scan https://example.com --yes --profile active --json --output report.json
+go run ./cmd/supascope scan --supabase-url https://project-ref.supabase.co --key sb_publishable_xxx --profile deep --graphql-schema-output schema.txt
 ```
 
 Public URL scans display an authorization notice unless `--yes` is provided.
@@ -35,6 +35,9 @@ Provide exactly one target:
 
 ## Scan Controls
 
+- `--profile passive` runs static/local scanning only. This is the default.
+- `--profile active` enables safe active service probes.
+- `--profile deep` enables active service probes and GraphQL introspection.
 - `--yes` confirms authorization for public URL scans.
 - `--user-agent value` sets the User-Agent for remote HTTP requests.
 - `--header "Name: value"` adds a remote HTTP request header. Repeat it for multiple headers.
@@ -57,11 +60,12 @@ JWT metadata is decoded without signature verification and is used only to class
 Active checks are disabled by default and must be explicitly enabled:
 
 ```bash
-go run ./cmd/supascope scan https://example.com --yes --active-checks
+go run ./cmd/supascope scan https://example.com --yes --profile active
 ```
 
 Current active checks perform safe service probes for REST, Auth, Storage, Realtime, Edge Functions, and GraphQL. GraphQL uses a POST probe with `__typename`; it does not test introspection.
 
+- `--profile active` enables active service probes.
 - `--active-checks` enables active service probes.
 - `--active-storage-tests` changes the storage probe to bucket listing and should only be used when authorized.
 
@@ -70,11 +74,12 @@ Current active checks perform safe service probes for REST, Auth, Storage, Realt
 GraphQL introspection is disabled by default and must be explicitly enabled:
 
 ```bash
-go run ./cmd/supascope scan --supabase-url https://project-ref.supabase.co --key sb_publishable_xxx --graphql-introspection
+go run ./cmd/supascope scan --supabase-url https://project-ref.supabase.co --key sb_publishable_xxx --profile deep
 ```
 
+- `--profile deep` enables GraphQL introspection and active service probes.
 - `--graphql-introspection` sends an explicit `__schema` introspection query to `/graphql/v1`.
-- `--graphql-schema-output schema.txt` writes the raw introspection response to a text file when introspection is enabled.
+- `--graphql-schema-output schema.txt` writes the raw introspection response to a text file and implies GraphQL introspection.
 - If introspection succeeds, SupaScope generates a medium-severity finding because schema exposure can help attackers map available GraphQL types and operations.
 - Use this only for projects you are authorized to test.
 

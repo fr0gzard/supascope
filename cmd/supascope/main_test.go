@@ -11,6 +11,8 @@ import (
 func TestNormalizeScanArgsMovesFlagsBeforeTarget(t *testing.T) {
 	got := normalizeScanArgs([]string{
 		"https://example.com",
+		"--profile",
+		"deep",
 		"--yes",
 		"--json",
 		"--header",
@@ -23,6 +25,8 @@ func TestNormalizeScanArgsMovesFlagsBeforeTarget(t *testing.T) {
 		"schema.txt",
 	})
 	want := []string{
+		"--profile",
+		"deep",
 		"--yes",
 		"--json",
 		"--header",
@@ -42,9 +46,37 @@ func TestNormalizeScanArgsMovesFlagsBeforeTarget(t *testing.T) {
 }
 
 func TestScanOptionsRequiresGraphQLIntrospectionForSchemaOutput(t *testing.T) {
-	_, err := scanOptions([]string{"https://example.com"}, "", "", "", "", nil, false, "", false, 0, true, false, false, false, false, false, "schema.txt")
+	opts, err := scanOptions(scanConfig{Args: []string{"https://example.com"}, Yes: true, GraphQLSchemaOutput: "schema.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.GraphQLIntrospection {
+		t.Fatal("expected schema output to imply GraphQL introspection")
+	}
+}
+
+func TestScanOptionsAppliesProfiles(t *testing.T) {
+	active, err := scanOptions(scanConfig{Args: []string{"https://example.com"}, Profile: "active", Yes: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !active.ActiveChecks || active.GraphQLIntrospection {
+		t.Fatalf("active profile options = %#v", active)
+	}
+
+	deep, err := scanOptions(scanConfig{Args: []string{"https://example.com"}, Profile: "deep", Yes: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deep.ActiveChecks || !deep.GraphQLIntrospection {
+		t.Fatalf("deep profile options = %#v", deep)
+	}
+}
+
+func TestScanOptionsRejectsInvalidProfile(t *testing.T) {
+	_, err := scanOptions(scanConfig{Args: []string{"https://example.com"}, Profile: "nope", Yes: true})
 	if err == nil {
-		t.Fatal("expected schema output without introspection to fail")
+		t.Fatal("expected invalid profile error")
 	}
 }
 

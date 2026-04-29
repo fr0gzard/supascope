@@ -25,6 +25,10 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
 - Optional storage bucket listing probe behind `--active-storage-tests`.
 - Optional GraphQL introspection checks behind `--graphql-introspection`.
 - Optional raw GraphQL introspection response output with `--graphql-schema-output`.
+- Scan profiles for common flag bundles:
+  - `--profile passive`
+  - `--profile active`
+  - `--profile deep`
 
 ## Active Check Behavior
 
@@ -128,6 +132,7 @@ This passes as of this progress note.
 
 High-value next steps:
 
+- Add config file support for reusable scan settings.
 - Add source map expansion and scanning beyond referenced `.map` assets.
 - Add dynamic browser network discovery later, probably with `chromedp` or Playwright.
 - Add HAR import support.

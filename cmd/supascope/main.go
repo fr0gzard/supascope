@@ -15,12 +15,13 @@ import (
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "scan" {
-		fmt.Fprintln(os.Stderr, "usage: supascope scan [target] [--path dir] [--supabase-url url] [--key key] [--user-agent value] [--header 'Name: value'] [--max-assets n] [--active-checks] [--active-storage-tests] [--graphql-introspection] [--graphql-schema-output schema.txt] [--json] [--output report.md|report.json] [--debug] [--yes]")
+		fmt.Fprintln(os.Stderr, "usage: supascope scan [target] [--profile passive|active|deep] [--path dir] [--supabase-url url] [--key key] [--json] [--output report.md|report.json] [--yes]")
 		os.Exit(2)
 	}
 
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
 	var headers headerFlags
+	profile := fs.String("profile", "passive", "scan profile: passive, active, or deep")
 	path := fs.String("path", "", "local folder to scan")
 	supabaseURL := fs.String("supabase-url", "", "known Supabase project URL")
 	key := fs.String("key", "", "Supabase anon or publishable key")
@@ -49,7 +50,26 @@ func main() {
 		os.Exit(2)
 	}
 
-	opts, err := scanOptions(fs.Args(), *path, *supabaseURL, *key, *userAgent, parsedHeaders, *jsonOut, *output, *debug, *maxAssets, *yes, *dynamic, *interactive, *activeChecks, *activeStorage, *graphqlIntrospection, *graphqlSchemaOutput)
+	opts, err := scanOptions(scanConfig{
+		Args:                 fs.Args(),
+		Profile:              *profile,
+		Path:                 *path,
+		SupabaseURL:          *supabaseURL,
+		Key:                  *key,
+		UserAgent:            *userAgent,
+		Headers:              parsedHeaders,
+		JSON:                 *jsonOut,
+		Output:               *output,
+		Debug:                *debug,
+		MaxAssets:            *maxAssets,
+		Yes:                  *yes,
+		Dynamic:              *dynamic,
+		Interactive:          *interactive,
+		ActiveChecks:         *activeChecks,
+		ActiveStorageTests:   *activeStorage,
+		GraphQLIntrospection: *graphqlIntrospection,
+		GraphQLSchemaOutput:  *graphqlSchemaOutput,
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -100,6 +120,7 @@ func renderReport(result model.Report, jsonOut bool) (string, error) {
 
 func normalizeScanArgs(args []string) []string {
 	valueFlags := map[string]bool{
+		"--profile":               true,
 		"--path":                  true,
 		"--supabase-url":          true,
 		"--key":                   true,
@@ -166,49 +187,100 @@ func parseHeaders(values []string) (map[string]string, error) {
 	return headers, nil
 }
 
-func scanOptions(args []string, path, supabaseURL, key, userAgent string, headers map[string]string, jsonOut bool, output string, debug bool, maxAssets int, yes, dynamic, interactive, activeChecks, activeStorage, graphqlIntrospection bool, graphqlSchemaOutput string) (model.Options, error) {
+type scanConfig struct {
+	Args                 []string
+	Profile              string
+	Path                 string
+	SupabaseURL          string
+	Key                  string
+	UserAgent            string
+	Headers              map[string]string
+	JSON                 bool
+	Output               string
+	Debug                bool
+	MaxAssets            int
+	Yes                  bool
+	Dynamic              bool
+	Interactive          bool
+	ActiveChecks         bool
+	ActiveStorageTests   bool
+	GraphQLIntrospection bool
+	GraphQLSchemaOutput  string
+}
+
+func scanOptions(config scanConfig) (model.Options, error) {
+	config = applyProfile(config)
+	if !validProfile(config.Profile) {
+		return model.Options{}, fmt.Errorf("invalid --profile %q: expected passive, active, or deep", config.Profile)
+	}
+
 	targets := 0
-	if len(args) > 0 && args[0] != "" {
+	if len(config.Args) > 0 && config.Args[0] != "" {
 		targets++
 	}
-	if path != "" {
+	if config.Path != "" {
 		targets++
 	}
-	if supabaseURL != "" {
+	if config.SupabaseURL != "" {
 		targets++
 	}
 	if targets != 1 {
 		return model.Options{}, fmt.Errorf("provide exactly one scan target: URL, --path, or --supabase-url")
 	}
-	if graphqlSchemaOutput != "" && !graphqlIntrospection {
-		return model.Options{}, fmt.Errorf("--graphql-schema-output requires --graphql-introspection")
-	}
 
 	var target model.Target
 	switch {
-	case path != "":
-		target = model.Target{Type: model.TargetLocalPath, Value: path}
-	case supabaseURL != "":
-		target = model.Target{Type: model.TargetSupabaseProject, Value: supabaseURL}
+	case config.Path != "":
+		target = model.Target{Type: model.TargetLocalPath, Value: config.Path}
+	case config.SupabaseURL != "":
+		target = model.Target{Type: model.TargetSupabaseProject, Value: config.SupabaseURL}
 	default:
-		target = model.Target{Type: model.TargetURL, Value: args[0]}
+		target = model.Target{Type: model.TargetURL, Value: config.Args[0]}
 	}
 
 	return model.Options{
 		Target:               target,
-		Key:                  key,
-		UserAgent:            userAgent,
-		Headers:              headers,
-		Debug:                debug,
-		MaxAssets:            maxAssets,
-		JSON:                 jsonOut,
-		Output:               output,
-		Yes:                  yes,
-		Dynamic:              dynamic,
-		Interactive:          interactive,
-		ActiveChecks:         activeChecks,
-		ActiveStorageTests:   activeStorage,
-		GraphQLIntrospection: graphqlIntrospection,
-		GraphQLSchemaOutput:  graphqlSchemaOutput,
+		Key:                  config.Key,
+		UserAgent:            config.UserAgent,
+		Headers:              config.Headers,
+		Debug:                config.Debug,
+		MaxAssets:            config.MaxAssets,
+		JSON:                 config.JSON,
+		Output:               config.Output,
+		Yes:                  config.Yes,
+		Dynamic:              config.Dynamic,
+		Interactive:          config.Interactive,
+		ActiveChecks:         config.ActiveChecks,
+		ActiveStorageTests:   config.ActiveStorageTests,
+		GraphQLIntrospection: config.GraphQLIntrospection,
+		GraphQLSchemaOutput:  config.GraphQLSchemaOutput,
 	}, nil
+}
+
+func applyProfile(config scanConfig) scanConfig {
+	if config.Profile == "" {
+		config.Profile = "passive"
+	}
+	switch config.Profile {
+	case "passive":
+	case "active":
+		config.ActiveChecks = true
+	case "deep":
+		config.ActiveChecks = true
+		config.GraphQLIntrospection = true
+	default:
+	}
+	if config.GraphQLSchemaOutput != "" {
+		config.GraphQLIntrospection = true
+	}
+	return config
+}
+
+func validProfile(profile string) bool {
+	switch profile {
+	case "passive", "active", "deep":
+		return true
+	default:
+		return false
+	}
 }
