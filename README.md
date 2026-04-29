@@ -59,6 +59,8 @@ Detected secrets are masked in discoveries, findings, and evidence snippets. JWT
 
 JWT metadata is decoded without signature verification and is used only to classify/report exposed artifacts. Raw token values are not printed in reports.
 
+Database URL-like values are classified more conservatively when they look like templates, placeholders, examples, or mock data. Concrete database URLs with user, password, host, and database remain critical findings.
+
 ## Active Checks
 
 Active checks are disabled by default and must be explicitly enabled:

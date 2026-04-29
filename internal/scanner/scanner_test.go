@@ -215,6 +215,24 @@ func TestJWTFindingIncludesSafeMetadata(t *testing.T) {
 	}
 }
 
+func TestConcreteDatabaseURLInDummyContextStaysCritical(t *testing.T) {
+	discoveries := []model.Discovery{{
+		Type:   "key",
+		Value:  "postgresql://app:secret@db.internal.net:5432/app",
+		Source: "static",
+		Evidence: &model.Evidence{
+			Source:  "static",
+			URL:     "https://example.com/assets/dummyPods.js",
+			Snippet: "const dummyConnection = 'postgresql://app:secret@db.internal.net:5432/app'",
+		},
+	}}
+
+	findings := discoveriesToFindings(discoveries)
+	if !hasFinding(findings, "SUPA-DB-CRIT-001") {
+		t.Fatalf("expected critical DB URL finding, got %#v", findings)
+	}
+}
+
 func scannerTestJWT(claims map[string]any) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 	payload, err := json.Marshal(claims)

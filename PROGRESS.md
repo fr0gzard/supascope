@@ -16,6 +16,7 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
 - Informational scan coverage findings when WAF/CDN blocking may have limited passive scan coverage.
 - Supabase project URL, endpoint, publishable key, secret key, legacy JWT, and database URL detection.
 - Key classification for publishable keys, secret keys, legacy anon JWTs, legacy service-role JWTs, database URLs, and unknown JWTs.
+- Conservative database URL classification for templates, placeholders, examples, and mock/dummy contexts.
 - Safe JWT report metadata for role, issuer, expiry, and project ref when inferable.
 - Secret masking in reports.
 - JSON and Markdown reports.

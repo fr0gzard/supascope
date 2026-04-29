@@ -31,6 +31,11 @@ func Classify(value string) Classification {
 	case strings.HasPrefix(value, "sb_secret_"):
 		return base(value, "secret_key", "critical", "SUPA-KEY-CRIT-001", "Secret key exposed", "Secret keys can grant privileged access and must not be present in public code.", "Rotate the key immediately and move privileged operations server-side.")
 	case regexp.MustCompile(`(?i)^postgres(?:ql)?://`).MatchString(value):
+		if isTemplatedDatabaseURL(value) {
+			classified := base(value, "database_url_template", "info", "SUPA-DB-INFO-001", "Database URL pattern detected", "A database connection string template or placeholder was detected. This is not confirmed credential exposure by itself.", "Review whether this template is expected in public frontend artifacts.")
+			classified.Confidence = "medium"
+			return classified
+		}
 		return base(value, "database_url", "critical", "SUPA-DB-CRIT-001", "Database URL exposed", "Database URLs can expose direct database credentials.", "Rotate database credentials and remove the URL from public artifacts.")
 	case strings.HasPrefix(value, "eyJ"):
 		metadata := jwtMetadata(value)
@@ -50,6 +55,28 @@ func Classify(value string) Classification {
 	default:
 		return base(value, "unknown", "info", "SUPA-KEY-INFO-001", "Key-like value detected", "The value could not be classified.", "Review whether this value should be public.")
 	}
+}
+
+func isTemplatedDatabaseURL(value string) bool {
+	for _, marker := range []string{"${", "}", "<", ">", "[", "]"} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return true
+	}
+	if parsed.Hostname() == "" || parsed.User == nil {
+		return true
+	}
+	if _, hasPassword := parsed.User.Password(); !hasPassword {
+		return true
+	}
+	if strings.Trim(parsed.Path, "/") == "" {
+		return true
+	}
+	return false
 }
 
 func base(value, typ, severity, findingID, title, impact, recommendation string) Classification {

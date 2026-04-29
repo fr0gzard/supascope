@@ -33,6 +33,46 @@ func TestClassifyJWTIncludesSafeMetadata(t *testing.T) {
 	}
 }
 
+func TestClassifyDatabaseURLTemplate(t *testing.T) {
+	classified := Classify("postgresql://${user}:${password}@${host}:${port}/${database}")
+	if classified.Type != "database_url_template" {
+		t.Fatalf("Type = %q, want database_url_template", classified.Type)
+	}
+	if classified.Severity != "info" {
+		t.Fatalf("Severity = %q, want info", classified.Severity)
+	}
+}
+
+func TestClassifyConcreteDatabaseURL(t *testing.T) {
+	classified := Classify("postgresql://app:secret@db.internal.net:5432/app")
+	if classified.Type != "database_url" {
+		t.Fatalf("Type = %q, want database_url", classified.Type)
+	}
+	if classified.Severity != "critical" {
+		t.Fatalf("Severity = %q, want critical", classified.Severity)
+	}
+}
+
+func TestClassifyConcreteDatabaseURLWithWeakPassword(t *testing.T) {
+	classified := Classify("postgresql://postgres:password@prod-db.internal/app")
+	if classified.Type != "database_url" {
+		t.Fatalf("Type = %q, want database_url", classified.Type)
+	}
+	if classified.Severity != "critical" {
+		t.Fatalf("Severity = %q, want critical", classified.Severity)
+	}
+}
+
+func TestClassifyIncompleteDatabaseURLPattern(t *testing.T) {
+	classified := Classify("postgresql://production-db:5432/app")
+	if classified.Type != "database_url_template" {
+		t.Fatalf("Type = %q, want database_url_template", classified.Type)
+	}
+	if classified.Severity != "info" {
+		t.Fatalf("Severity = %q, want info", classified.Severity)
+	}
+}
+
 func testJWT(claims map[string]any) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 	payload, err := json.Marshal(claims)
