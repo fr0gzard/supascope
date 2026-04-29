@@ -25,6 +25,7 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
   - repeated `--header "Name: value"`
   - `--max-assets n`
   - `--debug`
+ - Default browser-like request headers are applied when no headers are provided. These include a modern User-Agent and common navigation headers to reduce WAF/edge blocking false positives. Use `--user-agent` or repeated `--header` to override defaults.
 - Read-only active service checks behind `--active-checks`.
 - Informational findings generated from active service statuses.
 - Optional storage bucket listing probe behind `--active-storage-tests`.

@@ -187,6 +187,24 @@ func TestScanURLReportsWAFBlockedAssets(t *testing.T) {
 	t.Fatalf("expected waf_block discovery, got %#v", discoveries)
 }
 
+func TestScanURLReportsVerifyingBrowserChallenge(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("CiteHR\n\nVerifying your browser..."))
+	}))
+	defer server.Close()
+
+	discoveries, err := NewStatic("", nil, false, 0).ScanURL(context.Background(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, discovery := range discoveries {
+		if discovery.Type == "waf_block" && discovery.Evidence != nil && strings.Contains(discovery.Evidence.Detail, "verifying your browser") {
+			return
+		}
+	}
+	t.Fatalf("expected verifying browser WAF discovery, got %#v", discoveries)
+}
+
 func TestScanURLDoesNotSkipSuccessfulCloudflareAsset(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -237,4 +255,70 @@ func TestScanURLDoesNotSkipSuccessfulAssetWithGenericChallengeWords(t *testing.T
 		}
 	}
 	t.Fatalf("expected Supabase discovery from successful asset with generic challenge words, got %#v", discoveries)
+}
+
+func TestScanURLSetsDefaultRequestHeaders(t *testing.T) {
+	// Verify default request headers are applied when none are provided.
+	var gotAccept string
+	var gotUpgrade string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAccept = r.Header.Get("Accept")
+		gotUpgrade = r.Header.Get("Upgrade-Insecure-Requests")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	_, err := NewStatic("", nil, false, 0).ScanURL(context.Background(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotAccept != defaultRequestHeaders["Accept"] {
+		t.Fatalf("Accept header = %q, want %q", gotAccept, defaultRequestHeaders["Accept"])
+	}
+	if gotUpgrade != defaultRequestHeaders["Upgrade-Insecure-Requests"] {
+		t.Fatalf("Upgrade-Insecure-Requests = %q, want %q", gotUpgrade, defaultRequestHeaders["Upgrade-Insecure-Requests"])
+	}
+}
+
+func TestScanURLUsesDefaultUserAgent(t *testing.T) {
+	// When no user agent is provided, the default browser-like User-Agent should be used.
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.UserAgent()
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	_, err := NewStatic("", nil, false, 0).ScanURL(context.Background(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != defaultUserAgent {
+		t.Fatalf("User-Agent = %q, want %q", got, defaultUserAgent)
+	}
+}
+
+func TestScanURLHeaderOverridePriority(t *testing.T) {
+	headers := map[string]string{"Accept": "text/plain", "Accept-Language": "fr-FR"}
+
+	var gotAccept string
+	var gotLang string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAccept = r.Header.Get("Accept")
+		gotLang = r.Header.Get("Accept-Language")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	_, err := NewStatic("", headers, false, 0).ScanURL(context.Background(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAccept != "text/plain" {
+		t.Fatalf("Accept = %q, want %q", gotAccept, "text/plain")
+	}
+	if gotLang != "fr-FR" {
+		t.Fatalf("Accept-Language = %q, want %q", gotLang, "fr-FR")
+	}
 }

@@ -19,7 +19,7 @@ import (
 const (
 	defaultMaxAssets          = 50
 	maxDepth                  = 3
-	defaultUserAgent          = "SupaScope/0.1"
+	defaultUserAgent          = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 SupaScope/0.1"
 	maxSourceMapSources       = 250
 	maxSourceMapBytesScanned  = 2 * 1024 * 1024
 	maxSourceMapDiscoveries   = 25
@@ -33,6 +33,14 @@ var assetPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`sourceMappingURL=([^\s*]+)`),
 	regexp.MustCompile(`(?i)import\(\s*["']([^"']+\.(?:js|mjs)(?:\?[^"']*)?)["']\s*\)`),
 	regexp.MustCompile(`(?i)url\(\s*["']?([^"')]+\.(?:css|map|json)(?:\?[^"')]+)?)["']?\s*\)`),
+}
+
+var defaultRequestHeaders = map[string]string{
+	"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,application/javascript,text/css,application/json;q=0.8,*/*;q=0.7",
+	"Accept-Language":           "en-US,en;q=0.9",
+	"Cache-Control":             "no-cache",
+	"Pragma":                    "no-cache",
+	"Upgrade-Insecure-Requests": "1",
 }
 
 type Static struct {
@@ -211,10 +219,7 @@ func (s Static) fetch(ctx context.Context, target string) (fetchResult, error) {
 	if err != nil {
 		return fetchResult{}, err
 	}
-	for name, value := range s.headers {
-		req.Header.Set(name, value)
-	}
-	req.Header.Set("User-Agent", s.userAgent)
+	applyRequestHeaders(req, s.userAgent, s.headers)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -240,6 +245,19 @@ func (s Static) fetch(ctx context.Context, target string) (fetchResult, error) {
 		return fetchResult{}, fmt.Errorf("request failed for %s: %s", target, resp.Status)
 	}
 	return result, nil
+}
+
+func applyRequestHeaders(req *http.Request, userAgent string, headers map[string]string) {
+	for name, value := range defaultRequestHeaders {
+		req.Header.Set(name, value)
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	if strings.TrimSpace(userAgent) == "" {
+		userAgent = defaultUserAgent
+	}
+	req.Header.Set("User-Agent", userAgent)
 }
 
 func detectWAF(statusCode int, headers http.Header, body string) (bool, string) {
@@ -271,7 +289,7 @@ func detectWAF(statusCode int, headers http.Header, body string) (bool, string) 
 	if headers.Get("X-Vercel-ID") != "" && (statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests) {
 		add("vercel edge block")
 	}
-	for _, marker := range []string{"error 1020", "checking your browser", "attention required"} {
+	for _, marker := range []string{"error 1020", "checking your browser", "verifying your browser", "attention required"} {
 		if strings.Contains(lowerBody, marker) {
 			add(marker)
 		}
@@ -293,7 +311,7 @@ func detectWAF(statusCode int, headers http.Header, body string) (bool, string) 
 	if !blockingStatus {
 		for _, match := range matches {
 			switch match {
-			case "error 1020", "checking your browser", "attention required", "vercel edge block":
+			case "error 1020", "checking your browser", "verifying your browser", "attention required", "vercel edge block":
 				return true, fmt.Sprintf("possible WAF/CDN block: status=%d fingerprints=%s", statusCode, strings.Join(matches, ", "))
 			}
 		}

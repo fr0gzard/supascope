@@ -47,6 +47,7 @@ If a fetched asset appears blocked by a WAF/CDN such as Cloudflare, Akamai, Fast
 - `--header "Name: value"` adds a remote HTTP request header. Repeat it for multiple headers.
 - `--max-assets n` limits recursive same-origin asset fetching during URL scans.
 - `--debug` prints request diagnostics to stderr.
+ - When no headers are provided, SupaScope applies a set of browser-like default request headers (including a modern User-Agent and navigation headers) to improve passive fetch coverage and reduce false positives from WAF/CDN challenge pages. These defaults can be overridden via `--user-agent` or `--header`.
 
 ## Key And JWT Reporting
 

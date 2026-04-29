@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"supascope/internal/model"
@@ -42,11 +41,6 @@ func ProbeProjectServices(ctx context.Context, projectURL string, opts ActiveOpt
 	base.RawQuery = ""
 	base.Fragment = ""
 
-	userAgent := strings.TrimSpace(opts.UserAgent)
-	if userAgent == "" {
-		userAgent = defaultUserAgent
-	}
-
 	client := &http.Client{Timeout: 15 * time.Second}
 	probe := func(method, path string, body []byte) model.ServiceStatus {
 		target := base.ResolveReference(&url.URL{Path: path}).String()
@@ -55,10 +49,7 @@ func ProbeProjectServices(ctx context.Context, projectURL string, opts ActiveOpt
 			debugActive(opts.Debug, "active request build failed: url=%s err=%v", target, err)
 			return model.ServiceUnknown
 		}
-		for name, value := range opts.Headers {
-			req.Header.Set(name, value)
-		}
-		req.Header.Set("User-Agent", userAgent)
+		applyRequestHeaders(req, opts.UserAgent, opts.Headers)
 		if len(body) > 0 {
 			req.Header.Set("Content-Type", "application/json")
 		}
@@ -100,20 +91,12 @@ func ProbeGraphQLIntrospection(ctx context.Context, projectURL string, opts Acti
 	base.RawQuery = ""
 	base.Fragment = ""
 
-	userAgent := strings.TrimSpace(opts.UserAgent)
-	if userAgent == "" {
-		userAgent = defaultUserAgent
-	}
-
 	target := base.ResolveReference(&url.URL{Path: "/graphql/v1"}).String()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader([]byte(graphQLIntrospectionBody)))
 	if err != nil {
 		return GraphQLIntrospectionResult{}, err
 	}
-	for name, value := range opts.Headers {
-		req.Header.Set(name, value)
-	}
-	req.Header.Set("User-Agent", userAgent)
+	applyRequestHeaders(req, opts.UserAgent, opts.Headers)
 	req.Header.Set("Content-Type", "application/json")
 	if opts.Key != "" {
 		req.Header.Set("apikey", opts.Key)
