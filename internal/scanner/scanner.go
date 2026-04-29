@@ -2,6 +2,8 @@ package scanner
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -55,6 +57,15 @@ func (s Scanner) Scan(ctx context.Context, opts model.Options) (model.Report, er
 	if opts.ActiveChecks {
 		findings = append(findings, activeStatusFindings(activeServices)...)
 	}
+	if opts.GraphQLIntrospection {
+		results := graphqlIntrospectionChecks(ctx, discoveries, opts)
+		findings = append(findings, graphqlIntrospectionFindings(results)...)
+		if opts.GraphQLSchemaOutput != "" {
+			if err := writeGraphQLIntrospectionOutput(opts.GraphQLSchemaOutput, results); err != nil {
+				return model.Report{}, err
+			}
+		}
+	}
 
 	if hasSupabaseEvidence(discoveries) && restCheckMissing(opts, services.REST) {
 		findings = append(findings, model.Finding{
@@ -79,6 +90,65 @@ func (s Scanner) Scan(ctx context.Context, opts model.Options) (model.Report, er
 		Discoveries: sanitizeDiscoveries(discoveries),
 		Findings:    findings,
 	}, nil
+}
+
+func graphqlIntrospectionChecks(ctx context.Context, discoveries []model.Discovery, opts model.Options) []engine.GraphQLIntrospectionResult {
+	key := activeKey(discoveries, opts.Key)
+	var results []engine.GraphQLIntrospectionResult
+	for _, projectURL := range supabaseProjectURLs(discoveries, opts.Target) {
+		result, err := engine.ProbeGraphQLIntrospection(ctx, projectURL, engine.ActiveOptions{
+			UserAgent: opts.UserAgent,
+			Headers:   opts.Headers,
+			Key:       key,
+			Debug:     opts.Debug,
+		})
+		if err != nil {
+			continue
+		}
+		results = append(results, result)
+	}
+	return results
+}
+
+func graphqlIntrospectionFindings(results []engine.GraphQLIntrospectionResult) []model.Finding {
+	findings := make([]model.Finding, 0, len(results))
+	for _, result := range results {
+		if result.Enabled {
+			findings = append(findings, model.Finding{
+				ID:             "SUPA-GRAPHQL-MED-001",
+				Title:          "GraphQL introspection is enabled",
+				Severity:       "medium",
+				Category:       "graphql_introspection",
+				Evidence:       model.Evidence{Source: "active_check", URL: result.ProjectURL + "/graphql/v1", Detail: "introspection status: enabled"},
+				Impact:         "GraphQL introspection exposes schema structure to callers that can reach the endpoint. This can help attackers understand available types and operations.",
+				Recommendation: "Disable introspection for public clients if it is not required, and confirm all exposed GraphQL access is protected by RLS and least-privilege policies.",
+				Confidence:     "high",
+			})
+		}
+	}
+	return findings
+}
+
+func writeGraphQLIntrospectionOutput(path string, results []engine.GraphQLIntrospectionResult) error {
+	var b strings.Builder
+	for i, result := range results {
+		if !result.Enabled || result.Response == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		if len(results) > 1 {
+			fmt.Fprintf(&b, "# %s\n\n", result.ProjectURL)
+		} else if i == 0 {
+			fmt.Fprintf(&b, "# %s\n\n", result.ProjectURL)
+		}
+		b.WriteString(result.Response)
+		if !strings.HasSuffix(result.Response, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
 func activeStatusFindings(services model.ServiceMap) []model.Finding {
@@ -427,6 +497,9 @@ func mode(opts model.Options) []string {
 	}
 	if opts.ActiveStorageTests {
 		mode = append(mode, "active_storage_tests")
+	}
+	if opts.GraphQLIntrospection {
+		mode = append(mode, "graphql_introspection")
 	}
 	return mode
 }

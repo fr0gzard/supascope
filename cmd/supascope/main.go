@@ -15,7 +15,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "scan" {
-		fmt.Fprintln(os.Stderr, "usage: supascope scan [target] [--path dir] [--supabase-url url] [--key key] [--user-agent value] [--header 'Name: value'] [--max-assets n] [--active-checks] [--active-storage-tests] [--json] [--output report.md|report.json] [--debug] [--yes]")
+		fmt.Fprintln(os.Stderr, "usage: supascope scan [target] [--path dir] [--supabase-url url] [--key key] [--user-agent value] [--header 'Name: value'] [--max-assets n] [--active-checks] [--active-storage-tests] [--graphql-introspection] [--graphql-schema-output schema.txt] [--json] [--output report.md|report.json] [--debug] [--yes]")
 		os.Exit(2)
 	}
 
@@ -35,6 +35,8 @@ func main() {
 	interactive := fs.Bool("interactive", false, "interactive dynamic scan; planned for chromedp phase")
 	activeChecks := fs.Bool("active-checks", false, "enable active checks")
 	activeStorage := fs.Bool("active-storage-tests", false, "enable active storage tests")
+	graphqlIntrospection := fs.Bool("graphql-introspection", false, "enable GraphQL introspection probe")
+	graphqlSchemaOutput := fs.String("graphql-schema-output", "", "write GraphQL introspection response to a text file")
 
 	if err := fs.Parse(normalizeScanArgs(os.Args[2:])); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -47,7 +49,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	opts, err := scanOptions(fs.Args(), *path, *supabaseURL, *key, *userAgent, parsedHeaders, *jsonOut, *output, *debug, *maxAssets, *yes, *dynamic, *interactive, *activeChecks, *activeStorage)
+	opts, err := scanOptions(fs.Args(), *path, *supabaseURL, *key, *userAgent, parsedHeaders, *jsonOut, *output, *debug, *maxAssets, *yes, *dynamic, *interactive, *activeChecks, *activeStorage, *graphqlIntrospection, *graphqlSchemaOutput)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -98,13 +100,14 @@ func renderReport(result model.Report, jsonOut bool) (string, error) {
 
 func normalizeScanArgs(args []string) []string {
 	valueFlags := map[string]bool{
-		"--path":         true,
-		"--supabase-url": true,
-		"--key":          true,
-		"--user-agent":   true,
-		"--header":       true,
-		"--max-assets":   true,
-		"--output":       true,
+		"--path":                  true,
+		"--supabase-url":          true,
+		"--key":                   true,
+		"--user-agent":            true,
+		"--header":                true,
+		"--max-assets":            true,
+		"--output":                true,
+		"--graphql-schema-output": true,
 	}
 
 	var flags []string
@@ -163,7 +166,7 @@ func parseHeaders(values []string) (map[string]string, error) {
 	return headers, nil
 }
 
-func scanOptions(args []string, path, supabaseURL, key, userAgent string, headers map[string]string, jsonOut bool, output string, debug bool, maxAssets int, yes, dynamic, interactive, activeChecks, activeStorage bool) (model.Options, error) {
+func scanOptions(args []string, path, supabaseURL, key, userAgent string, headers map[string]string, jsonOut bool, output string, debug bool, maxAssets int, yes, dynamic, interactive, activeChecks, activeStorage, graphqlIntrospection bool, graphqlSchemaOutput string) (model.Options, error) {
 	targets := 0
 	if len(args) > 0 && args[0] != "" {
 		targets++
@@ -177,6 +180,9 @@ func scanOptions(args []string, path, supabaseURL, key, userAgent string, header
 	if targets != 1 {
 		return model.Options{}, fmt.Errorf("provide exactly one scan target: URL, --path, or --supabase-url")
 	}
+	if graphqlSchemaOutput != "" && !graphqlIntrospection {
+		return model.Options{}, fmt.Errorf("--graphql-schema-output requires --graphql-introspection")
+	}
 
 	var target model.Target
 	switch {
@@ -189,18 +195,20 @@ func scanOptions(args []string, path, supabaseURL, key, userAgent string, header
 	}
 
 	return model.Options{
-		Target:             target,
-		Key:                key,
-		UserAgent:          userAgent,
-		Headers:            headers,
-		Debug:              debug,
-		MaxAssets:          maxAssets,
-		JSON:               jsonOut,
-		Output:             output,
-		Yes:                yes,
-		Dynamic:            dynamic,
-		Interactive:        interactive,
-		ActiveChecks:       activeChecks,
-		ActiveStorageTests: activeStorage,
+		Target:               target,
+		Key:                  key,
+		UserAgent:            userAgent,
+		Headers:              headers,
+		Debug:                debug,
+		MaxAssets:            maxAssets,
+		JSON:                 jsonOut,
+		Output:               output,
+		Yes:                  yes,
+		Dynamic:              dynamic,
+		Interactive:          interactive,
+		ActiveChecks:         activeChecks,
+		ActiveStorageTests:   activeStorage,
+		GraphQLIntrospection: graphqlIntrospection,
+		GraphQLSchemaOutput:  graphqlSchemaOutput,
 	}, nil
 }

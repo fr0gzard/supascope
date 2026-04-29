@@ -23,6 +23,8 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
 - Read-only active service checks behind `--active-checks`.
 - Informational findings generated from active service statuses.
 - Optional storage bucket listing probe behind `--active-storage-tests`.
+- Optional GraphQL introspection checks behind `--graphql-introspection`.
+- Optional raw GraphQL introspection response output with `--graphql-schema-output`.
 
 ## Active Check Behavior
 
@@ -53,7 +55,7 @@ HTTP statuses map to service states:
 
 Active probe results are reported in `services` and also generate informational `service_status` findings for reachable, authorization-gated, or blocked services. These findings explain exposure context only; they do not claim a vulnerability by themselves.
 
-GraphQL active probing currently uses a safe POST query for `__typename`. GraphQL introspection testing is not part of this probe and should remain behind a separate explicit flag when added.
+GraphQL active probing currently uses a safe POST query for `__typename`. GraphQL introspection testing is separate and only runs when `--graphql-introspection` is explicitly enabled.
 
 ## Recent Real-Site Test
 
@@ -126,7 +128,6 @@ This passes as of this progress note.
 
 High-value next steps:
 
-- Add optional GraphQL introspection behind a separate explicit flag.
 - Add source map expansion and scanning beyond referenced `.map` assets.
 - Add dynamic browser network discovery later, probably with `chromedp` or Playwright.
 - Add HAR import support.

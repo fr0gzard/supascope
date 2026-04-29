@@ -130,6 +130,39 @@ func TestActiveChecksGenerateServiceStatusFindings(t *testing.T) {
 	}
 }
 
+func TestGraphQLIntrospectionWritesSchemaAndFinding(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/graphql/v1" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"__schema":{"queryType":{"name":"Query"},"types":[{"kind":"OBJECT","name":"profiles"}]}}}`))
+	}))
+	defer server.Close()
+
+	output := filepath.Join(t.TempDir(), "schema.txt")
+	result, err := New().Scan(context.Background(), model.Options{
+		Target:               model.Target{Type: model.TargetSupabaseProject, Value: server.URL},
+		Yes:                  true,
+		GraphQLIntrospection: true,
+		GraphQLSchemaOutput:  output,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFinding(result.Findings, "SUPA-GRAPHQL-MED-001") {
+		t.Fatal("expected GraphQL introspection finding")
+	}
+	written, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(written), "profiles") {
+		t.Fatalf("schema output = %q, want type name", string(written))
+	}
+}
+
 func TestJWTFindingIncludesSafeMetadata(t *testing.T) {
 	dir := t.TempDir()
 	jwt := scannerTestJWT(map[string]any{

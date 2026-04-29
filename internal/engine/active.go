@@ -3,7 +3,9 @@ package engine
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,6 +21,13 @@ type ActiveOptions struct {
 	Key                string
 	Debug              bool
 	ActiveStorageTests bool
+}
+
+type GraphQLIntrospectionResult struct {
+	ProjectURL string
+	Status     model.ServiceStatus
+	Enabled    bool
+	Response   string
 }
 
 func ProbeProjectServices(ctx context.Context, projectURL string, opts ActiveOptions) (model.ServiceMap, error) {
@@ -77,6 +86,85 @@ func ProbeProjectServices(ctx context.Context, projectURL string, opts ActiveOpt
 		GraphQL:   probe(http.MethodPost, "/graphql/v1", []byte(`{"query":"query SupaScopeProbe { __typename }"}`)),
 	}
 	return services, nil
+}
+
+func ProbeGraphQLIntrospection(ctx context.Context, projectURL string, opts ActiveOptions) (GraphQLIntrospectionResult, error) {
+	base, err := url.Parse(projectURL)
+	if err != nil {
+		return GraphQLIntrospectionResult{}, err
+	}
+	if base.Scheme == "" || base.Host == "" {
+		return GraphQLIntrospectionResult{}, fmt.Errorf("invalid Supabase project URL: %s", projectURL)
+	}
+	base.Path = ""
+	base.RawQuery = ""
+	base.Fragment = ""
+
+	userAgent := strings.TrimSpace(opts.UserAgent)
+	if userAgent == "" {
+		userAgent = defaultUserAgent
+	}
+
+	target := base.ResolveReference(&url.URL{Path: "/graphql/v1"}).String()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader([]byte(graphQLIntrospectionBody)))
+	if err != nil {
+		return GraphQLIntrospectionResult{}, err
+	}
+	for name, value := range opts.Headers {
+		req.Header.Set(name, value)
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Content-Type", "application/json")
+	if opts.Key != "" {
+		req.Header.Set("apikey", opts.Key)
+		req.Header.Set("Authorization", "Bearer "+opts.Key)
+	}
+
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		debugActive(opts.Debug, "graphql introspection failed: url=%s err=%v", target, err)
+		return GraphQLIntrospectionResult{ProjectURL: projectURL, Status: model.ServiceUnknown}, nil
+	}
+	defer resp.Body.Close()
+	debugActive(opts.Debug, "graphql introspection response: url=%s status=%s", target, resp.Status)
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	if err != nil {
+		return GraphQLIntrospectionResult{}, err
+	}
+	response := formatJSON(body)
+	return GraphQLIntrospectionResult{
+		ProjectURL: projectURL,
+		Status:     statusFromHTTP(resp.StatusCode),
+		Enabled:    resp.StatusCode >= 200 && resp.StatusCode < 300 && hasGraphQLSchema(body),
+		Response:   response,
+	}, nil
+}
+
+const graphQLIntrospectionBody = `{"query":"query SupaScopeIntrospection { __schema { queryType { name } mutationType { name } subscriptionType { name } directives { name } types { kind name } } }"}`
+
+func hasGraphQLSchema(body []byte) bool {
+	var decoded struct {
+		Data struct {
+			Schema any `json:"__schema"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return false
+	}
+	return decoded.Data.Schema != nil
+}
+
+func formatJSON(body []byte) string {
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return string(body)
+	}
+	formatted, err := json.MarshalIndent(decoded, "", "  ")
+	if err != nil {
+		return string(body)
+	}
+	return string(formatted) + "\n"
 }
 
 func storageProbePath(activeStorageTests bool) string {

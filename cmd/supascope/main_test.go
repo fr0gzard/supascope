@@ -19,6 +19,8 @@ func TestNormalizeScanArgsMovesFlagsBeforeTarget(t *testing.T) {
 		"70",
 		"--output",
 		"report.md",
+		"--graphql-schema-output",
+		"schema.txt",
 	})
 	want := []string{
 		"--yes",
@@ -29,11 +31,20 @@ func TestNormalizeScanArgsMovesFlagsBeforeTarget(t *testing.T) {
 		"70",
 		"--output",
 		"report.md",
+		"--graphql-schema-output",
+		"schema.txt",
 		"https://example.com",
 	}
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("normalizeScanArgs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestScanOptionsRequiresGraphQLIntrospectionForSchemaOutput(t *testing.T) {
+	_, err := scanOptions([]string{"https://example.com"}, "", "", "", "", nil, false, "", false, 0, true, false, false, false, false, false, "schema.txt")
+	if err == nil {
+		t.Fatal("expected schema output without introspection to fail")
 	}
 }
 

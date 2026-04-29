@@ -65,19 +65,21 @@ type Finding struct {
 }
 
 type Options struct {
-	Target             Target
-	Key                string
-	UserAgent          string
-	Headers            map[string]string
-	Debug              bool
-	MaxAssets          int
-	JSON               bool
-	Output             string
-	Yes                bool
-	Dynamic            bool
-	Interactive        bool
-	ActiveChecks       bool
-	ActiveStorageTests bool
+	Target               Target
+	Key                  string
+	UserAgent            string
+	Headers              map[string]string
+	Debug                bool
+	MaxAssets            int
+	JSON                 bool
+	Output               string
+	Yes                  bool
+	Dynamic              bool
+	Interactive          bool
+	ActiveChecks         bool
+	ActiveStorageTests   bool
+	GraphQLIntrospection bool
+	GraphQLSchemaOutput  string
 }
 
 type Report struct {

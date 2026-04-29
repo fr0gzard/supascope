@@ -4,7 +4,7 @@ SupaScope is an authorized Supabase security reconnaissance scanner for detectin
 
 ## Status
 
-Go implementation in progress. The current implementation supports static public URL scans, local folder scans, recursive same-origin asset discovery, Supabase URL/key/endpoint detection, key classification, safe JWT metadata reporting, secret masking, active service checks, JSON reports, and Markdown reports.
+Go implementation in progress. The current implementation supports static public URL scans, local folder scans, recursive same-origin asset discovery, Supabase URL/key/endpoint detection, key classification, safe JWT metadata reporting, secret masking, active service checks, optional GraphQL introspection checks, JSON reports, and Markdown reports.
 
 ## Usage
 
@@ -13,6 +13,7 @@ go test ./...
 go run ./cmd/supascope scan --path . --json
 go run ./cmd/supascope scan https://example.com --yes
 go run ./cmd/supascope scan https://example.com --yes --active-checks --json --output report.json
+go run ./cmd/supascope scan --supabase-url https://project-ref.supabase.co --key sb_publishable_xxx --graphql-introspection --graphql-schema-output schema.txt
 ```
 
 Public URL scans display an authorization notice unless `--yes` is provided.
@@ -63,5 +64,18 @@ Current active checks perform safe service probes for REST, Auth, Storage, Realt
 
 - `--active-checks` enables active service probes.
 - `--active-storage-tests` changes the storage probe to bucket listing and should only be used when authorized.
+
+## GraphQL Introspection
+
+GraphQL introspection is disabled by default and must be explicitly enabled:
+
+```bash
+go run ./cmd/supascope scan --supabase-url https://project-ref.supabase.co --key sb_publishable_xxx --graphql-introspection
+```
+
+- `--graphql-introspection` sends an explicit `__schema` introspection query to `/graphql/v1`.
+- `--graphql-schema-output schema.txt` writes the raw introspection response to a text file when introspection is enabled.
+- If introspection succeeds, SupaScope generates a medium-severity finding because schema exposure can help attackers map available GraphQL types and operations.
+- Use this only for projects you are authorized to test.
 
 Dynamic browser scanning is planned for a later phase using `chromedp`.
