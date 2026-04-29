@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.gocache/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+supabase_*
+supascope.exe
