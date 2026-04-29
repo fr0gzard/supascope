@@ -354,6 +354,17 @@ func discoveriesToFindings(discoveries []model.Discovery) []model.Finding {
 				Recommendation: "Confirm the referenced service is intended to be reachable and protected by least-privilege policies.",
 				Confidence:     "high",
 			})
+		case "waf_block":
+			findings = append(findings, model.Finding{
+				ID:             "SUPA-WAF-INFO-001",
+				Title:          "WAF or CDN blocking may have limited scan coverage",
+				Severity:       "info",
+				Category:       "scan_coverage",
+				Evidence:       evidenceOrDefault(discovery),
+				Impact:         "Some public assets or responses may not have been available to the scanner, so passive results may be incomplete.",
+				Recommendation: "Retry with authorized headers, a browser-like User-Agent, pacing controls when available, or validate coverage manually.",
+				Confidence:     "medium",
+			})
 		}
 	}
 	return findings

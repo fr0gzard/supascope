@@ -24,6 +24,7 @@ const (
 	maxSourceMapBytesScanned  = 2 * 1024 * 1024
 	maxSourceMapDiscoveries   = 25
 	maxSourceContentScanBytes = 256 * 1024
+	maxWAFBodySampleBytes     = 4096
 )
 
 var assetPatterns = []*regexp.Regexp{
@@ -53,17 +54,18 @@ func NewStatic(userAgent string, headers map[string]string, debug bool, maxAsset
 }
 
 func (s Static) ScanURL(ctx context.Context, target string) ([]model.Discovery, error) {
-	body, finalURL, err := s.fetch(ctx, target)
+	root, err := s.fetch(ctx, target)
 	if err != nil {
 		return nil, err
 	}
-	s.debugf("root: target=%s final=%s bytes=%d", target, finalURL, len(body))
+	s.debugf("root: target=%s final=%s bytes=%d", target, root.finalURL, len(root.body))
 
 	var discoveries []model.Discovery
-	discoveries = append(discoveries, scanAssetContent(finalURL, body)...)
+	discoveries = append(discoveries, wafDiscovery(root)...)
+	discoveries = append(discoveries, scanAssetContent(root.finalURL, root.body)...)
 
 	queue := make([]queuedAsset, 0)
-	for _, asset := range s.discoverAssetURLs(finalURL, body) {
+	for _, asset := range s.discoverAssetURLs(root.finalURL, root.body) {
 		queue = append(queue, queuedAsset{url: asset, depth: 1})
 	}
 	s.debugf("root assets: queued=%d", len(queue))
@@ -77,14 +79,19 @@ func (s Static) ScanURL(ctx context.Context, target string) ([]model.Discovery, 
 		}
 		visited[next.url] = true
 
-		content, fetchedURL, err := s.fetch(ctx, next.url)
+		fetched, err := s.fetch(ctx, next.url)
 		if err != nil {
 			s.debugf("fetch skipped: url=%s err=%v", next.url, err)
 			continue
 		}
-		discoveries = append(discoveries, scanAssetContent(fetchedURL, content)...)
+		discoveries = append(discoveries, wafDiscovery(fetched)...)
+		if fetched.blocked {
+			s.debugf("fetch blocked: url=%s detail=%s", fetched.finalURL, fetched.wafDetail)
+			continue
+		}
+		discoveries = append(discoveries, scanAssetContent(fetched.finalURL, fetched.body)...)
 
-		for _, child := range s.discoverAssetURLs(fetchedURL, content) {
+		for _, child := range s.discoverAssetURLs(fetched.finalURL, fetched.body) {
 			if !visited[child] && len(queue)+len(visited) < s.maxAssets {
 				queue = append(queue, queuedAsset{url: child, depth: next.depth + 1})
 			}
@@ -93,6 +100,22 @@ func (s Static) ScanURL(ctx context.Context, target string) ([]model.Discovery, 
 	s.debugf("done: visited_assets=%d queued_remaining=%d max_assets=%d discoveries=%d", len(visited), len(queue), s.maxAssets, len(discoveries))
 
 	return discoveries, nil
+}
+
+type fetchResult struct {
+	body      string
+	finalURL  string
+	blocked   bool
+	wafDetail string
+	wafSample string
+}
+
+func wafDiscovery(result fetchResult) []model.Discovery {
+	if !result.blocked {
+		return nil
+	}
+	evidence := model.Evidence{Source: "static_fetch", URL: result.finalURL, Detail: result.wafDetail, Snippet: result.wafSample}
+	return []model.Discovery{{Type: "waf_block", Value: result.wafDetail, Source: "static_fetch", Evidence: &evidence}}
 }
 
 func scanAssetContent(fetchedURL string, content string) []model.Discovery {
@@ -183,10 +206,10 @@ func discoverAssetURLs(base string, content string, debugf func(string, ...any))
 	return out
 }
 
-func (s Static) fetch(ctx context.Context, target string) (string, string, error) {
+func (s Static) fetch(ctx context.Context, target string) (fetchResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return "", "", err
+		return fetchResult{}, err
 	}
 	for name, value := range s.headers {
 		req.Header.Set(name, value)
@@ -195,22 +218,89 @@ func (s Static) fetch(ctx context.Context, target string) (string, string, error
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return "", "", err
+		return fetchResult{}, err
 	}
 	defer resp.Body.Close()
+	bytes, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+	if err != nil {
+		return fetchResult{}, err
+	}
+	finalURL := resp.Request.URL.String()
 	if target == resp.Request.URL.String() {
 		s.debugf("response: url=%s status=%s content-type=%s content-encoding=%s", target, resp.Status, resp.Header.Get("Content-Type"), resp.Header.Get("Content-Encoding"))
 	} else {
-		s.debugf("response: requested=%s final=%s status=%s content-type=%s content-encoding=%s", target, resp.Request.URL.String(), resp.Status, resp.Header.Get("Content-Type"), resp.Header.Get("Content-Encoding"))
+		s.debugf("response: requested=%s final=%s status=%s content-type=%s content-encoding=%s", target, finalURL, resp.Status, resp.Header.Get("Content-Type"), resp.Header.Get("Content-Encoding"))
 	}
+	blocked, detail := detectWAF(resp.StatusCode, resp.Header, string(bytes))
+	result := fetchResult{body: string(bytes), finalURL: finalURL, blocked: blocked, wafDetail: detail, wafSample: wafBodySample(string(bytes))}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", resp.Request.URL.String(), fmt.Errorf("request failed for %s: %s", target, resp.Status)
+		if blocked {
+			return result, nil
+		}
+		return fetchResult{}, fmt.Errorf("request failed for %s: %s", target, resp.Status)
 	}
-	bytes, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
-	if err != nil {
-		return "", resp.Request.URL.String(), err
+	return result, nil
+}
+
+func detectWAF(statusCode int, headers http.Header, body string) (bool, string) {
+	lowerBody := strings.ToLower(body)
+	var matches []string
+	add := func(value string) {
+		if value != "" {
+			matches = append(matches, value)
+		}
 	}
-	return string(bytes), resp.Request.URL.String(), nil
+
+	blockingStatus := statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable || statusCode >= 500
+	server := strings.ToLower(headers.Get("Server"))
+	if strings.Contains(server, "cloudflare") || headers.Get("Cf-Ray") != "" || headers.Get("Cf-Cache-Status") != "" || headers.Get("Cf-Mitigated") != "" {
+		add("cloudflare")
+	}
+	if headers.Get("X-Sucuri-ID") != "" || headers.Get("X-Sucuri-Block") != "" {
+		add("sucuri")
+	}
+	if headers.Get("X-Iinfo") != "" || strings.Contains(strings.ToLower(headers.Get("Set-Cookie")), "incap_ses") || strings.Contains(strings.ToLower(headers.Get("Set-Cookie")), "visid_incap") {
+		add("imperva/incapsula")
+	}
+	if strings.Contains(server, "akamai") || headers.Get("Akamai-Origin-Hop") != "" || strings.Contains(strings.ToLower(headers.Get("Set-Cookie")), "ak_bmsc") {
+		add("akamai")
+	}
+	if strings.Contains(server, "fastly") || headers.Get("Fastly-Restarts") != "" || headers.Get("X-Served-By") != "" && strings.Contains(strings.ToLower(headers.Get("X-Served-By")), "cache-") {
+		add("fastly")
+	}
+	if headers.Get("X-Vercel-ID") != "" && (statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests) {
+		add("vercel edge block")
+	}
+	for _, marker := range []string{"error 1020", "captcha", "challenge", "bot detection", "checking your browser", "attention required"} {
+		if strings.Contains(lowerBody, marker) {
+			add(marker)
+		}
+	}
+	if blockingStatus && strings.Contains(lowerBody, "access denied") {
+		add("access denied")
+	}
+
+	if len(matches) == 0 {
+		return false, ""
+	}
+	if !blockingStatus {
+		for _, match := range matches {
+			switch match {
+			case "error 1020", "captcha", "challenge", "bot detection", "checking your browser", "attention required", "vercel edge block":
+				return true, fmt.Sprintf("possible WAF/CDN block: status=%d fingerprints=%s", statusCode, strings.Join(matches, ", "))
+			}
+		}
+		return false, ""
+	}
+	return true, fmt.Sprintf("possible WAF/CDN block: status=%d fingerprints=%s", statusCode, strings.Join(matches, ", "))
+}
+
+func wafBodySample(body string) string {
+	body = strings.TrimSpace(body)
+	if len(body) > maxWAFBodySampleBytes {
+		body = body[:maxWAFBodySampleBytes]
+	}
+	return body
 }
 
 func (s Static) debugf(format string, args ...any) {

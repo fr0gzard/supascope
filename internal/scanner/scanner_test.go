@@ -163,6 +163,22 @@ func TestGraphQLIntrospectionWritesSchemaAndFinding(t *testing.T) {
 	}
 }
 
+func TestWAFDiscoveryGeneratesCoverageFinding(t *testing.T) {
+	findings := discoveriesToFindings([]model.Discovery{{
+		Type:   "waf_block",
+		Value:  "possible WAF/CDN block: status=403 fingerprints=cloudflare",
+		Source: "static_fetch",
+		Evidence: &model.Evidence{
+			Source: "static_fetch",
+			URL:    "https://example.com/assets/app.js",
+			Detail: "possible WAF/CDN block: status=403 fingerprints=cloudflare",
+		},
+	}})
+	if !hasFinding(findings, "SUPA-WAF-INFO-001") {
+		t.Fatal("expected WAF coverage finding")
+	}
+}
+
 func TestJWTFindingIncludesSafeMetadata(t *testing.T) {
 	dir := t.TempDir()
 	jwt := scannerTestJWT(map[string]any{

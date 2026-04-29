@@ -28,6 +28,8 @@ Provide exactly one target:
 
 Passive URL scans inspect fetched public frontend assets. If referenced source maps are reachable, SupaScope parses `sourcesContent` and reports evidence against the original source entry inside the map. Source map scanning uses conservative early-stop limits so very large maps do not dominate passive scans.
 
+If a fetched asset appears blocked by a WAF/CDN such as Cloudflare, Akamai, Fastly, Sucuri, Imperva, or a generic challenge page, SupaScope adds an informational scan coverage finding. This means passive results may be incomplete for blocked assets.
+
 ## Output
 
 - Default output is Markdown written to stdout.

@@ -12,6 +12,8 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
 - Source map parsing for reachable `.map` files with `sourcesContent` scanning.
 - Conservative source map early stopping by source count, scanned bytes, per-source bytes, and discovery count.
 - Final URL handling after redirects for correct same-origin asset resolution.
+- Static WAF/CDN block detection for common Cloudflare, Akamai, Fastly, Sucuri, Imperva, Vercel, and generic challenge fingerprints.
+- Informational scan coverage findings when WAF/CDN blocking may have limited passive scan coverage.
 - Supabase project URL, endpoint, publishable key, secret key, legacy JWT, and database URL detection.
 - Key classification for publishable keys, secret keys, legacy anon JWTs, legacy service-role JWTs, database URLs, and unknown JWTs.
 - Safe JWT report metadata for role, issuer, expiry, and project ref when inferable.

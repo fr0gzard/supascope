@@ -158,3 +158,58 @@ func TestScanSourceMapStopsAfterSourceLimit(t *testing.T) {
 		t.Fatalf("discoveries = %#v, want none after source limit", discoveries)
 	}
 }
+
+func TestScanURLReportsWAFBlockedAssets(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<script src="/assets/app.js"></script>`))
+		case "/assets/app.js":
+			w.Header().Set("Server", "cloudflare")
+			w.Header().Set("CF-Ray", "abc123")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("error 1020 access denied"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	discoveries, err := NewStatic("", nil, false, 0).ScanURL(context.Background(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, discovery := range discoveries {
+		if discovery.Type == "waf_block" && discovery.Evidence != nil && strings.Contains(discovery.Evidence.Detail, "cloudflare") {
+			return
+		}
+	}
+	t.Fatalf("expected waf_block discovery, got %#v", discoveries)
+}
+
+func TestScanURLDoesNotSkipSuccessfulCloudflareAsset(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<script src="/assets/app.js"></script>`))
+		case "/assets/app.js":
+			w.Header().Set("Server", "cloudflare")
+			w.Header().Set("CF-Ray", "abc123")
+			_, _ = w.Write([]byte("export const url = 'https://abcxyz.supabase.co';"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	discoveries, err := NewStatic("", nil, false, 0).ScanURL(context.Background(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, discovery := range discoveries {
+		if discovery.Type == "supabase_url" {
+			return
+		}
+	}
+	t.Fatalf("expected Supabase discovery from successful CDN asset, got %#v", discoveries)
+}
