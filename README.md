@@ -73,7 +73,6 @@ go run ./cmd/supascope scan https://example.com --yes --profile active
 Current active checks perform safe service probes for REST, Auth, Storage, Realtime, Edge Functions, and GraphQL. GraphQL uses a POST probe with `__typename`; it does not test introspection.
 
 - `--profile active` enables active service probes.
-- `--active-checks` enables active service probes.
 - `--active-storage-tests` changes the storage probe to bucket listing and should only be used when authorized.
 
 ## GraphQL Introspection

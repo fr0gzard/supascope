@@ -35,7 +35,6 @@ func main() {
 	yes := fs.Bool("yes", false, "confirm authorization notice for public URL scans")
 	dynamic := fs.Bool("dynamic", false, "dynamic browser scan; planned for chromedp phase")
 	interactive := fs.Bool("interactive", false, "interactive dynamic scan; planned for chromedp phase")
-	activeChecks := fs.Bool("active-checks", false, "enable active checks")
 	activeStorage := fs.Bool("active-storage-tests", false, "enable active storage tests")
 	graphqlIntrospection := fs.Bool("graphql-introspection", false, "enable GraphQL introspection probe")
 	graphqlSchemaOutput := fs.String("graphql-schema-output", "", "write GraphQL introspection response to a text file")
@@ -68,7 +67,6 @@ func main() {
 		Yes:                  *yes,
 		Dynamic:              *dynamic,
 		Interactive:          *interactive,
-		ActiveChecks:         *activeChecks,
 		ActiveStorageTests:   *activeStorage,
 		GraphQLIntrospection: *graphqlIntrospection,
 		GraphQLSchemaOutput:  *graphqlSchemaOutput,
@@ -274,6 +272,7 @@ func applyProfile(config scanConfig) scanConfig {
 	}
 	switch config.Profile {
 	case "passive":
+		config.ActiveChecks = false
 	case "active":
 		config.ActiveChecks = true
 	case "deep":

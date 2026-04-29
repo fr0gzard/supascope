@@ -26,7 +26,7 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
   - `--max-assets n`
   - `--debug`
  - Default browser-like request headers are applied when no headers are provided. These include a modern User-Agent and common navigation headers to reduce WAF/edge blocking false positives. Use `--user-agent` or repeated `--header` to override defaults.
-- Read-only active service checks behind `--active-checks`.
+- Read-only active service checks behind `--profile active`.
 - Informational findings generated from active service statuses.
 - Optional storage bucket listing probe behind `--active-storage-tests`.
 - Optional GraphQL introspection checks behind `--graphql-introspection`.
@@ -38,7 +38,7 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
 
 ## Active Check Behavior
 
-Active checks are explicitly gated by `--active-checks`. They use discovered or provided Supabase project URLs and an anon-style key when available.
+Active checks are explicitly gated by `--profile active` or `--profile deep`. They use discovered or provided Supabase project URLs and an anon-style key when available.
 
 Current active probes:
 
@@ -78,7 +78,7 @@ https://sectors.app
 Useful command shape:
 
 ```powershell
-go run ./cmd/supascope scan https://sectors.app --yes --json --active-checks --max-assets 70 --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0" --header "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" --header "Accept-Language: en-US,en;q=0.9,id;q=0.8" --header "Cache-Control: no-cache" --header "Pragma: no-cache" --header "Sec-Fetch-Dest: document" --header "Sec-Fetch-Mode: navigate" --header "Sec-Fetch-Site: same-origin" --header "Sec-Fetch-User: ?1" --header "Upgrade-Insecure-Requests: 1"
+go run ./cmd/supascope scan https://sectors.app --yes --json --profile active --max-assets 70 --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0" --header "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" --header "Accept-Language: en-US,en;q=0.9,id;q=0.8" --header "Cache-Control: no-cache" --header "Pragma: no-cache" --header "Sec-Fetch-Dest: document" --header "Sec-Fetch-Mode: navigate" --header "Sec-Fetch-Site: same-origin" --header "Sec-Fetch-User: ?1" --header "Upgrade-Insecure-Requests: 1"
 ```
 
 Observed active service result:
