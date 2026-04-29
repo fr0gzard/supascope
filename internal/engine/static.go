@@ -271,9 +271,16 @@ func detectWAF(statusCode int, headers http.Header, body string) (bool, string) 
 	if headers.Get("X-Vercel-ID") != "" && (statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests) {
 		add("vercel edge block")
 	}
-	for _, marker := range []string{"error 1020", "captcha", "challenge", "bot detection", "checking your browser", "attention required"} {
+	for _, marker := range []string{"error 1020", "checking your browser", "attention required"} {
 		if strings.Contains(lowerBody, marker) {
 			add(marker)
+		}
+	}
+	if blockingStatus {
+		for _, marker := range []string{"captcha", "challenge", "bot detection"} {
+			if strings.Contains(lowerBody, marker) {
+				add(marker)
+			}
 		}
 	}
 	if blockingStatus && strings.Contains(lowerBody, "access denied") {
@@ -286,7 +293,7 @@ func detectWAF(statusCode int, headers http.Header, body string) (bool, string) 
 	if !blockingStatus {
 		for _, match := range matches {
 			switch match {
-			case "error 1020", "captcha", "challenge", "bot detection", "checking your browser", "attention required", "vercel edge block":
+			case "error 1020", "checking your browser", "attention required", "vercel edge block":
 				return true, fmt.Sprintf("possible WAF/CDN block: status=%d fingerprints=%s", statusCode, strings.Join(matches, ", "))
 			}
 		}

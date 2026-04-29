@@ -213,3 +213,28 @@ func TestScanURLDoesNotSkipSuccessfulCloudflareAsset(t *testing.T) {
 	}
 	t.Fatalf("expected Supabase discovery from successful CDN asset, got %#v", discoveries)
 }
+
+func TestScanURLDoesNotSkipSuccessfulAssetWithGenericChallengeWords(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<script src="/assets/app.js"></script>`))
+		case "/assets/app.js":
+			_, _ = w.Write([]byte("const challenge = 'captcha'; export const url = 'https://abcxyz.supabase.co';"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	discoveries, err := NewStatic("", nil, false, 0).ScanURL(context.Background(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, discovery := range discoveries {
+		if discovery.Type == "supabase_url" {
+			return
+		}
+	}
+	t.Fatalf("expected Supabase discovery from successful asset with generic challenge words, got %#v", discoveries)
+}
