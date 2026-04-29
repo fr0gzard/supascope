@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -84,5 +86,75 @@ func TestDiscoverAssetURLsFromBundles(t *testing.T) {
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("DiscoverAssetURLs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestScanURLScansSourceMapSourcesContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<script src="/assets/app.js"></script>`))
+		case "/assets/app.js":
+			_, _ = w.Write([]byte(`console.log("app");
+//# sourceMappingURL=app.js.map`))
+		case "/assets/app.js.map":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":3,"sources":["webpack://app/src/lib/supabase.ts"],"sourcesContent":["export const supabaseUrl = 'https://abcxyz.supabase.co';"],"mappings":""}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	discoveries, err := NewStatic("", nil, false, 0).ScanURL(context.Background(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, discovery := range discoveries {
+		if discovery.Type != "supabase_url" || discovery.Evidence == nil {
+			continue
+		}
+		if discovery.Evidence.Source == "source_map" && strings.Contains(discovery.Evidence.File, "supabase.ts") {
+			return
+		}
+	}
+	t.Fatalf("expected source map discovery, got %#v", discoveries)
+}
+
+func TestScanSourceMapStopsAfterDiscoveryLimit(t *testing.T) {
+	sources := make([]string, maxSourceMapDiscoveries+5)
+	sourcesContent := make([]string, maxSourceMapDiscoveries+5)
+	for i := range sources {
+		sources[i] = "src/file.js"
+		sourcesContent[i] = "export const url = 'https://abcxyz.supabase.co';"
+	}
+	encoded, err := json.Marshal(sourceMap{Sources: sources, SourcesContent: sourcesContent})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	discoveries := scanSourceMap("https://example.com/assets/app.js.map", string(encoded))
+	if len(discoveries) != maxSourceMapDiscoveries {
+		t.Fatalf("discoveries = %d, want %d", len(discoveries), maxSourceMapDiscoveries)
+	}
+}
+
+func TestScanSourceMapStopsAfterSourceLimit(t *testing.T) {
+	sources := make([]string, maxSourceMapSources+1)
+	sourcesContent := make([]string, maxSourceMapSources+1)
+	for i := range sources {
+		sources[i] = "src/empty.js"
+		sourcesContent[i] = "console.log('empty');"
+	}
+	sources[maxSourceMapSources] = "src/late.js"
+	sourcesContent[maxSourceMapSources] = "export const url = 'https://late.supabase.co';"
+	encoded, err := json.Marshal(sourceMap{Sources: sources, SourcesContent: sourcesContent})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	discoveries := scanSourceMap("https://example.com/assets/app.js.map", string(encoded))
+	if len(discoveries) != 0 {
+		t.Fatalf("discoveries = %#v, want none after source limit", discoveries)
 	}
 }

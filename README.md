@@ -4,7 +4,7 @@ SupaScope is an authorized Supabase security reconnaissance scanner for detectin
 
 ## Status
 
-Go implementation in progress. The current implementation supports static public URL scans, local folder scans, recursive same-origin asset discovery, Supabase URL/key/endpoint detection, key classification, safe JWT metadata reporting, secret masking, active service checks, optional GraphQL introspection checks, JSON reports, and Markdown reports.
+Go implementation in progress. The current implementation supports static public URL scans, local folder scans, recursive same-origin asset discovery, source map `sourcesContent` scanning, Supabase URL/key/endpoint detection, key classification, safe JWT metadata reporting, secret masking, active service checks, optional GraphQL introspection checks, JSON reports, and Markdown reports.
 
 ## Usage
 
@@ -25,6 +25,8 @@ Provide exactly one target:
 - `https://example.com` scans a public URL and recursively fetches same-origin assets.
 - `--path .` scans a local folder.
 - `--supabase-url https://project-ref.supabase.co` scans a known Supabase project URL.
+
+Passive URL scans inspect fetched public frontend assets. If referenced source maps are reachable, SupaScope parses `sourcesContent` and reports evidence against the original source entry inside the map. Source map scanning uses conservative early-stop limits so very large maps do not dominate passive scans.
 
 ## Output
 

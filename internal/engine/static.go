@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,9 +17,13 @@ import (
 )
 
 const (
-	defaultMaxAssets = 50
-	maxDepth         = 3
-	defaultUserAgent = "SupaScope/0.1"
+	defaultMaxAssets          = 50
+	maxDepth                  = 3
+	defaultUserAgent          = "SupaScope/0.1"
+	maxSourceMapSources       = 250
+	maxSourceMapBytesScanned  = 2 * 1024 * 1024
+	maxSourceMapDiscoveries   = 25
+	maxSourceContentScanBytes = 256 * 1024
 )
 
 var assetPatterns = []*regexp.Regexp{
@@ -55,7 +60,7 @@ func (s Static) ScanURL(ctx context.Context, target string) ([]model.Discovery, 
 	s.debugf("root: target=%s final=%s bytes=%d", target, finalURL, len(body))
 
 	var discoveries []model.Discovery
-	discoveries = append(discoveries, detect.Artifacts(body, model.Evidence{Source: "static", URL: finalURL})...)
+	discoveries = append(discoveries, scanAssetContent(finalURL, body)...)
 
 	queue := make([]queuedAsset, 0)
 	for _, asset := range s.discoverAssetURLs(finalURL, body) {
@@ -77,7 +82,7 @@ func (s Static) ScanURL(ctx context.Context, target string) ([]model.Discovery, 
 			s.debugf("fetch skipped: url=%s err=%v", next.url, err)
 			continue
 		}
-		discoveries = append(discoveries, detect.Artifacts(content, model.Evidence{Source: "static", URL: fetchedURL})...)
+		discoveries = append(discoveries, scanAssetContent(fetchedURL, content)...)
 
 		for _, child := range s.discoverAssetURLs(fetchedURL, content) {
 			if !visited[child] && len(queue)+len(visited) < s.maxAssets {
@@ -88,6 +93,56 @@ func (s Static) ScanURL(ctx context.Context, target string) ([]model.Discovery, 
 	s.debugf("done: visited_assets=%d queued_remaining=%d max_assets=%d discoveries=%d", len(visited), len(queue), s.maxAssets, len(discoveries))
 
 	return discoveries, nil
+}
+
+func scanAssetContent(fetchedURL string, content string) []model.Discovery {
+	evidence := model.Evidence{Source: "static", URL: fetchedURL}
+	discoveries := detect.Artifacts(content, evidence)
+	if !isSourceMapURL(fetchedURL) {
+		return discoveries
+	}
+	return append(discoveries, scanSourceMap(fetchedURL, content)...)
+}
+
+type sourceMap struct {
+	Sources        []string `json:"sources"`
+	SourcesContent []string `json:"sourcesContent"`
+}
+
+func scanSourceMap(mapURL string, content string) []model.Discovery {
+	var parsed sourceMap
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		return nil
+	}
+	var discoveries []model.Discovery
+	scannedBytes := 0
+	for index, sourceContent := range parsed.SourcesContent {
+		if sourceContent == "" {
+			continue
+		}
+		if index >= maxSourceMapSources || scannedBytes >= maxSourceMapBytesScanned || len(discoveries) >= maxSourceMapDiscoveries {
+			break
+		}
+		if len(sourceContent) > maxSourceContentScanBytes {
+			sourceContent = sourceContent[:maxSourceContentScanBytes]
+		}
+		scannedBytes += len(sourceContent)
+		sourceName := fmt.Sprintf("sourcesContent[%d]", index)
+		if index < len(parsed.Sources) && strings.TrimSpace(parsed.Sources[index]) != "" {
+			sourceName = parsed.Sources[index]
+		}
+		evidence := model.Evidence{Source: "source_map", URL: mapURL, File: sourceName, Detail: "source map source: " + sourceName}
+		discoveries = append(discoveries, detect.Artifacts(sourceContent, evidence)...)
+	}
+	return discoveries
+}
+
+func isSourceMapURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return strings.HasSuffix(strings.ToLower(rawURL), ".map")
+	}
+	return strings.HasSuffix(strings.ToLower(parsed.Path), ".map")
 }
 
 func DiscoverAssetURLs(base string, content string) []string {

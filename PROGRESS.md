@@ -9,6 +9,8 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
 - Local folder scans.
 - Static public URL scans.
 - Recursive same-origin asset discovery, including Next.js `_next/static` chunks.
+- Source map parsing for reachable `.map` files with `sourcesContent` scanning.
+- Conservative source map early stopping by source count, scanned bytes, per-source bytes, and discovery count.
 - Final URL handling after redirects for correct same-origin asset resolution.
 - Supabase project URL, endpoint, publishable key, secret key, legacy JWT, and database URL detection.
 - Key classification for publishable keys, secret keys, legacy anon JWTs, legacy service-role JWTs, database URLs, and unknown JWTs.
@@ -133,7 +135,7 @@ This passes as of this progress note.
 High-value next steps:
 
 - Add config file support for reusable scan settings.
-- Add source map expansion and scanning beyond referenced `.map` assets.
+- Improve source map heuristics for unreferenced maps.
 - Add dynamic browser network discovery later, probably with `chromedp` or Playwright.
 - Add HAR import support.
 - Add rate limiting/pacing options, e.g. `--delay` and `--max-concurrency`.

@@ -383,7 +383,7 @@ func sourceCategory(discovery model.Discovery) sourceInfo {
 		location = strings.ToLower(discovery.Evidence.File + " " + discovery.Evidence.URL)
 	}
 	switch {
-	case strings.Contains(location, ".map"):
+	case discovery.Source == "source_map" || strings.Contains(location, ".map"):
 		return sourceInfo{"SUPA-SOURCEMAP-INFO-001", "Supabase artifact detected in source map", "source_map_exposure", "source map"}
 	case strings.Contains(location, ".env") || strings.Contains(location, "env.js") || strings.Contains(location, "config.js") || strings.Contains(location, "runtime-config.json"):
 		return sourceInfo{"SUPA-ENV-INFO-001", "Supabase artifact detected in public configuration", "env_exposure", "public configuration"}
