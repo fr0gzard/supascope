@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -55,7 +56,7 @@ func (s Scanner) Scan(ctx context.Context, opts model.Options) (model.Report, er
 		discoveries = dedupeDiscoveries(append(discoveries, activeDiscoveries...))
 		services = mergeServiceMaps(services, activeServices)
 	}
-	findings := discoveriesToFindings(discoveries)
+	findings := discoveriesToFindings(discoveries, opts.ShowSecrets)
 	if opts.ActiveChecks {
 		findings = append(findings, activeStatusFindings(activeServices)...)
 	}
@@ -89,7 +90,7 @@ func (s Scanner) Scan(ctx context.Context, opts model.Options) (model.Report, er
 		Mode:        mode(opts),
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		Services:    services,
-		Discoveries: sanitizeDiscoveries(discoveries),
+		Discoveries: reportDiscoveries(discoveries, opts.ShowSecrets),
 		Findings:    findings,
 	}, nil
 }
@@ -126,15 +127,55 @@ func graphqlIntrospectionFindings(results []engine.GraphQLIntrospectionResult) [
 				Recommendation: "Disable introspection for public clients if it is not required, and confirm all exposed GraphQL access is protected by RLS and least-privilege policies.",
 				Confidence:     "high",
 			})
+			continue
+		}
+		if result.Status == model.ServiceReachable || result.Response != "" {
+			findings = append(findings, model.Finding{
+				ID:             "SUPA-GRAPHQL-INFO-002",
+				Title:          "GraphQL introspection did not return a schema",
+				Severity:       "info",
+				Category:       "graphql_introspection",
+				Evidence:       model.Evidence{Source: "active_check", URL: result.ProjectURL + "/graphql/v1", Detail: graphqlIntrospectionDetail(result)},
+				Impact:         "The GraphQL endpoint handled the request, but schema introspection was unavailable or returned errors.",
+				Recommendation: "Review the GraphQL response body from --graphql-schema-output to confirm whether pg_graphql is disabled, introspection is blocked, or a key is required.",
+				Confidence:     "medium",
+			})
 		}
 	}
 	return findings
 }
 
+func graphqlIntrospectionDetail(result engine.GraphQLIntrospectionResult) string {
+	detail := fmt.Sprintf("introspection status: no_schema; http_status: %s", result.Status)
+	if messages := graphQLErrorMessages(result.Response); len(messages) > 0 {
+		detail += "; errors: " + strings.Join(messages, "; ")
+	}
+	return detail
+}
+
+func graphQLErrorMessages(response string) []string {
+	var decoded struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal([]byte(response), &decoded); err != nil {
+		return nil
+	}
+	messages := make([]string, 0, len(decoded.Errors))
+	for _, graphqlErr := range decoded.Errors {
+		message := strings.TrimSpace(graphqlErr.Message)
+		if message != "" {
+			messages = append(messages, message)
+		}
+	}
+	return messages
+}
+
 func writeGraphQLIntrospectionOutput(path string, results []engine.GraphQLIntrospectionResult) error {
 	var b strings.Builder
 	for i, result := range results {
-		if !result.Enabled || result.Response == "" {
+		if result.Response == "" {
 			continue
 		}
 		if b.Len() > 0 {
@@ -323,7 +364,7 @@ func mergeServiceStatus(base, next model.ServiceStatus) model.ServiceStatus {
 	return base
 }
 
-func discoveriesToFindings(discoveries []model.Discovery) []model.Finding {
+func discoveriesToFindings(discoveries []model.Discovery, showSecrets bool) []model.Finding {
 	findings := make([]model.Finding, 0)
 	for _, discovery := range discoveries {
 		switch discovery.Type {
@@ -346,6 +387,9 @@ func discoveriesToFindings(discoveries []model.Discovery) []model.Finding {
 				category = source.category
 			}
 			evidence := evidenceOrDefault(discovery)
+			if showSecrets {
+				evidence.MaskedValue = discovery.Value
+			}
 			evidence.Detail = classified.Detail
 			findings = append(findings, model.Finding{
 				ID: classified.FindingID, Title: title, Severity: classified.Severity, Category: category,
@@ -353,9 +397,13 @@ func discoveriesToFindings(discoveries []model.Discovery) []model.Finding {
 				Impact:   classified.Impact, Recommendation: classified.Recommendation, Confidence: classified.Confidence,
 			})
 		case "endpoint":
+			evidence := evidenceOrDefault(discovery)
+			if showSecrets {
+				evidence.MaskedValue = discovery.Value
+			}
 			findings = append(findings, model.Finding{
 				ID: "SUPA-ENDPOINT-INFO-001", Title: "Supabase service endpoint observed", Severity: "info", Category: "service_detection",
-				Evidence:       evidenceOrDefault(discovery),
+				Evidence:       evidence,
 				Impact:         "A Supabase API surface was referenced by the scanned application artifact.",
 				Recommendation: "Confirm the referenced service is intended to be reachable and protected by least-privilege policies.",
 				Confidence:     "high",
@@ -448,6 +496,27 @@ func hasSupabaseEvidence(discoveries []model.Discovery) bool {
 		}
 	}
 	return false
+}
+
+func reportDiscoveries(discoveries []model.Discovery, showSecrets bool) []model.Discovery {
+	if showSecrets {
+		return revealDiscoveries(discoveries)
+	}
+	return sanitizeDiscoveries(discoveries)
+}
+
+func revealDiscoveries(discoveries []model.Discovery) []model.Discovery {
+	revealed := make([]model.Discovery, 0, len(discoveries))
+	for _, discovery := range discoveries {
+		if discovery.Type == "key" || discovery.Type == "endpoint" {
+			discovery.MaskedValue = discovery.Value
+			if discovery.Evidence != nil {
+				discovery.Evidence.MaskedValue = discovery.Value
+			}
+		}
+		revealed = append(revealed, discovery)
+	}
+	return revealed
 }
 
 func sanitizeDiscoveries(discoveries []model.Discovery) []model.Discovery {

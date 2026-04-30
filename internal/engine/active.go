@@ -200,7 +200,7 @@ func ProbeGraphQLIntrospection(ctx context.Context, projectURL string, opts Acti
 	}, nil
 }
 
-const graphQLIntrospectionBody = `{"query":"query SupaScopeIntrospection { __schema { queryType { name } mutationType { name } subscriptionType { name } directives { name } types { kind name } } }"}`
+const graphQLIntrospectionBody = `{"query":"query IntrospectionQuery { __schema { queryType { name } mutationType { name } subscriptionType { name } types { kind name description fields(includeDeprecated: true) { name description args { name description type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } defaultValue } type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } isDeprecated deprecationReason } inputFields { name description type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } defaultValue } interfaces { kind name ofType { kind name ofType { kind name ofType { kind name } } } } enumValues(includeDeprecated: true) { name description isDeprecated deprecationReason } possibleTypes { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } directives { name description args { name description type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } defaultValue } } } }"}`
 
 func hasGraphQLSchema(body []byte) bool {
 	var decoded struct {

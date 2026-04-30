@@ -16,7 +16,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "scan" {
-		fmt.Fprintln(os.Stderr, "usage: supascope scan [target] [--profile passive|active|deep] [--path dir] [--supabase-url url] [--key key] [--json] [--output report.md|report.json] [--yes]")
+		fmt.Fprintln(os.Stderr, "usage: supascope scan [target] [--profile passive|active|deep] [--path dir] [--supabase-url url] [--key key] [--json] [--output report.md|report.json] [--yes] [--unsafe-show-secrets]")
 		os.Exit(2)
 	}
 
@@ -30,6 +30,7 @@ func main() {
 	fs.Var(&headers, "header", "additional header for remote HTTP requests, formatted as 'Name: value'")
 	jsonOut := fs.Bool("json", false, "print JSON report")
 	output := fs.String("output", "", "write report to file; respects --json")
+	showSecrets := fs.Bool("unsafe-show-secrets", false, "print full discovered secrets in reports")
 	debug := fs.Bool("debug", false, "print remote request diagnostics to stderr")
 	maxAssets := fs.Int("max-assets", 0, "maximum same-origin assets to fetch during URL scans")
 	yes := fs.Bool("yes", false, "confirm authorization notice for public URL scans")
@@ -62,6 +63,7 @@ func main() {
 		Headers:              parsedHeaders,
 		JSON:                 *jsonOut,
 		Output:               *output,
+		ShowSecrets:          *showSecrets,
 		Debug:                *debug,
 		MaxAssets:            *maxAssets,
 		Yes:                  *yes,
@@ -202,6 +204,7 @@ type scanConfig struct {
 	Headers              map[string]string
 	JSON                 bool
 	Output               string
+	ShowSecrets          bool
 	Debug                bool
 	MaxAssets            int
 	Yes                  bool
@@ -254,6 +257,7 @@ func scanOptions(config scanConfig) (model.Options, error) {
 		MaxAssets:            config.MaxAssets,
 		JSON:                 config.JSON,
 		Output:               config.Output,
+		ShowSecrets:          config.ShowSecrets,
 		Yes:                  config.Yes,
 		Dynamic:              config.Dynamic,
 		Interactive:          config.Interactive,

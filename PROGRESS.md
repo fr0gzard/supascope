@@ -19,6 +19,7 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
 - Conservative database URL classification for templates, placeholders, examples, and mock/dummy contexts.
 - Safe JWT report metadata for role, issuer, expiry, and project ref when inferable.
 - Secret masking in reports.
+- Explicit unsafe opt-in for raw report values with `--unsafe-show-secrets`.
 - JSON and Markdown reports.
 - Custom remote request controls:
   - `--user-agent`
@@ -30,7 +31,8 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
 - Informational findings generated from active service statuses.
 - Optional storage bucket listing probe behind `--active-storage-tests`.
 - Optional GraphQL introspection checks behind `--graphql-introspection`.
-- Optional raw GraphQL introspection response output with `--graphql-schema-output`.
+- Optional raw GraphQL response output with `--graphql-schema-output`, including error responses when no schema is returned.
+- Informational GraphQL introspection findings when the endpoint responds but returns errors or no schema.
 - Scan profiles for common flag bundles:
   - `--profile passive`
   - `--profile active`
@@ -123,6 +125,7 @@ Evidence snippets are capped:
 - max 100 words
 - max 800 runes for minified single-line bundles
 - secrets are masked before truncation
+- `--unsafe-show-secrets` reveals full detected values in report fields, but snippets remain capped.
 
 ## Tests
 

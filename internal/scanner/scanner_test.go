@@ -77,6 +77,38 @@ func TestURLScanRecursesIntoChunksAndSanitizesSecrets(t *testing.T) {
 	}
 }
 
+func TestShowSecretsReportsRawValues(t *testing.T) {
+	dir := t.TempDir()
+	secret := strings.Join([]string{"sb", "secret", "abcdefghijklmnopqrstuvwxyz"}, "_")
+	if err := os.WriteFile(filepath.Join(dir, "app.js"), []byte("const key = '"+secret+"';"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := New().Scan(context.Background(), model.Options{
+		Target:      model.Target{Type: model.TargetLocalPath, Value: dir},
+		Yes:         true,
+		ShowSecrets: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), secret) {
+		t.Fatal("report JSON does not contain raw secret with ShowSecrets enabled")
+	}
+
+	for _, finding := range result.Findings {
+		if finding.ID == "SUPA-KEY-CRIT-001" && finding.Evidence.MaskedValue == secret {
+			return
+		}
+	}
+	t.Fatal("expected finding evidence value to contain raw secret")
+}
+
 func TestActiveChecksGenerateServiceStatusFindings(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -163,6 +195,49 @@ func TestGraphQLIntrospectionWritesSchemaAndFinding(t *testing.T) {
 	}
 }
 
+func TestGraphQLIntrospectionWritesErrorResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/graphql/v1" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"errors":[{"message":"GraphQL introspection is not allowed"}]}`))
+	}))
+	defer server.Close()
+
+	output := filepath.Join(t.TempDir(), "schema.txt")
+	result, err := New().Scan(context.Background(), model.Options{
+		Target:               model.Target{Type: model.TargetSupabaseProject, Value: server.URL},
+		Yes:                  true,
+		GraphQLIntrospection: true,
+		GraphQLSchemaOutput:  output,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasFinding(result.Findings, "SUPA-GRAPHQL-MED-001") {
+		t.Fatal("did not expect GraphQL introspection finding for error response")
+	}
+	var detail string
+	for _, finding := range result.Findings {
+		if finding.ID == "SUPA-GRAPHQL-INFO-002" {
+			detail = finding.Evidence.Detail
+			break
+		}
+	}
+	if !strings.Contains(detail, "GraphQL introspection is not allowed") {
+		t.Fatalf("detail = %q, want GraphQL error message", detail)
+	}
+	written, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(written), "GraphQL introspection is not allowed") {
+		t.Fatalf("schema output = %q, want error response", string(written))
+	}
+}
+
 func TestWAFDiscoveryGeneratesCoverageFinding(t *testing.T) {
 	findings := discoveriesToFindings([]model.Discovery{{
 		Type:   "waf_block",
@@ -173,7 +248,7 @@ func TestWAFDiscoveryGeneratesCoverageFinding(t *testing.T) {
 			URL:    "https://example.com/assets/app.js",
 			Detail: "possible WAF/CDN block: status=403 fingerprints=cloudflare",
 		},
-	}})
+	}}, false)
 	if !hasFinding(findings, "SUPA-WAF-INFO-001") {
 		t.Fatal("expected WAF coverage finding")
 	}
@@ -227,7 +302,7 @@ func TestConcreteDatabaseURLInDummyContextStaysCritical(t *testing.T) {
 		},
 	}}
 
-	findings := discoveriesToFindings(discoveries)
+	findings := discoveriesToFindings(discoveries, false)
 	if !hasFinding(findings, "SUPA-DB-CRIT-001") {
 		t.Fatalf("expected critical DB URL finding, got %#v", findings)
 	}

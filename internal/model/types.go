@@ -75,6 +75,7 @@ type Options struct {
 	MaxAssets            int
 	JSON                 bool
 	Output               string
+	ShowSecrets          bool
 	Yes                  bool
 	Dynamic              bool
 	Interactive          bool

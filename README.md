@@ -36,6 +36,7 @@ If a fetched asset appears blocked by a WAF/CDN such as Cloudflare, Akamai, Fast
 - `--json` writes JSON instead of Markdown.
 - `--output file` writes the selected report format to a file.
 - `--json --output report.json` writes JSON to `report.json`.
+- `--unsafe-show-secrets` prints full discovered secrets in reports. Use only in trusted local environments.
 
 ## Scan Controls
 
@@ -58,7 +59,9 @@ Detected secrets are masked in discoveries, findings, and evidence snippets. JWT
 - expiry timestamp
 - Supabase project ref when inferable
 
-JWT metadata is decoded without signature verification and is used only to classify/report exposed artifacts. Raw token values are not printed in reports.
+JWT metadata is decoded without signature verification and is used only to classify/report exposed artifacts. Raw token values are not printed in reports unless `--unsafe-show-secrets` is passed.
+
+Pass `--unsafe-show-secrets` only when you explicitly need raw values in the report output. Evidence snippets remain shortened for readability.
 
 Database URL-like values are classified more conservatively when they look like templates, placeholders, examples, or mock data. Concrete database URLs with user, password, host, and database remain critical findings.
 
@@ -85,8 +88,9 @@ go run ./cmd/supascope scan --supabase-url https://project-ref.supabase.co --key
 
 - `--profile deep` enables GraphQL introspection and active service probes.
 - `--graphql-introspection` sends an explicit `__schema` introspection query to `/graphql/v1`.
-- `--graphql-schema-output schema.txt` writes the raw introspection response to a text file and implies GraphQL introspection.
+- `--graphql-schema-output schema.txt` writes the raw GraphQL response to a text file and implies GraphQL introspection, including error responses when no schema is returned.
 - If introspection succeeds, SupaScope generates a medium-severity finding because schema exposure can help attackers map available GraphQL types and operations.
+- If the endpoint returns GraphQL errors or no schema, SupaScope generates an informational finding with the error message when available.
 - Use this only for projects you are authorized to test.
 
 Dynamic browser scanning is planned for a later phase using `chromedp`.
