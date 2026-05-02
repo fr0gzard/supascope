@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -119,6 +121,102 @@ func TestScanURLScansSourceMapSourcesContent(t *testing.T) {
 		}
 	}
 	t.Fatalf("expected source map discovery, got %#v", discoveries)
+}
+
+func TestScanURLGuessesAdjacentSourceMap(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<script src="/assets/app.js"></script>`))
+		case "/assets/app.js":
+			_, _ = w.Write([]byte(`console.log("app");`))
+		case "/assets/app.js.map":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":3,"sources":["src/lib/supabase.ts"],"sourcesContent":["export const supabaseUrl = 'https://abcxyz.supabase.co';"],"mappings":""}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	discoveries, err := NewStatic("", nil, false, 0).ScanURL(context.Background(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, discovery := range discoveries {
+		if discovery.Type != "supabase_url" || discovery.Evidence == nil {
+			continue
+		}
+		if discovery.Evidence.Source == "source_map" && discovery.Evidence.File == "src/lib/supabase.ts" {
+			return
+		}
+	}
+	t.Fatalf("expected adjacent source map discovery, got %#v", discoveries)
+}
+
+func TestScanURLIgnoresMissingAdjacentSourceMap(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<script src="/assets/app.js"></script>`))
+		case "/assets/app.js":
+			_, _ = w.Write([]byte(`console.log("app");`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	if _, err := NewStatic("", nil, false, 0).ScanURL(context.Background(), server.URL); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScanLocalParsesSourceMapSourcesContent(t *testing.T) {
+	dir := t.TempDir()
+	mapPath := filepath.Join(dir, "app.js.map")
+	content := `{"version":3,"sources":["src/lib/supabase.ts"],"sourcesContent":["export const supabaseUrl = 'https://abcxyz.supabase.co';"],"mappings":""}`
+	if err := os.WriteFile(mapPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	discoveries, err := ScanLocal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, discovery := range discoveries {
+		if discovery.Type != "supabase_url" || discovery.Evidence == nil {
+			continue
+		}
+		if discovery.Evidence.Source == "source_map" && discovery.Evidence.File == "src/lib/supabase.ts" {
+			return
+		}
+	}
+	t.Fatalf("expected local source map discovery, got %#v", discoveries)
+}
+
+func TestSourceMapCandidateURL(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+		ok   bool
+	}{
+		{name: "js", raw: "https://example.com/assets/app.js?v=1", want: "https://example.com/assets/app.js.map", ok: true},
+		{name: "mjs", raw: "https://example.com/assets/app.mjs", want: "https://example.com/assets/app.mjs.map", ok: true},
+		{name: "css", raw: "https://example.com/assets/app.css#hash", want: "https://example.com/assets/app.css.map", ok: true},
+		{name: "map", raw: "https://example.com/assets/app.js.map", ok: false},
+		{name: "json", raw: "https://example.com/assets/manifest.json", ok: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := sourceMapCandidateURL(test.raw)
+			if ok != test.ok || got != test.want {
+				t.Fatalf("sourceMapCandidateURL(%q) = %q, %v; want %q, %v", test.raw, got, ok, test.want, test.ok)
+			}
+		})
+	}
 }
 
 func TestScanSourceMapStopsAfterDiscoveryLimit(t *testing.T) {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -105,6 +107,31 @@ func TestNormalizeScanArgsKeepsEqualsValueFlags(t *testing.T) {
 	}
 }
 
+func TestNormalizeScanArgsHandlesOutputAliases(t *testing.T) {
+	got := normalizeScanArgs([]string{
+		"https://example.com",
+		"-o",
+		"report.md",
+		"--output-json",
+		"report.json",
+		"-oj",
+		"extra.json",
+	})
+	want := []string{
+		"-o",
+		"report.md",
+		"--output-json",
+		"report.json",
+		"-oj",
+		"extra.json",
+		"https://example.com",
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("normalizeScanArgs() = %#v, want %#v", got, want)
+	}
+}
+
 func TestRenderReportRespectsJSONFlag(t *testing.T) {
 	rendered, err := renderReport(model.Report{
 		Scanner: model.ScannerInfo{Name: "SupaScope", Version: "test"},
@@ -118,5 +145,39 @@ func TestRenderReportRespectsJSONFlag(t *testing.T) {
 	}
 	if strings.Contains(rendered, "# SupaScope Report") {
 		t.Fatal("rendered JSON report contains Markdown output")
+	}
+}
+
+func TestWriteOutputReportsWritesMarkdownAndJSON(t *testing.T) {
+	dir := t.TempDir()
+	markdownPath := filepath.Join(dir, "report.md")
+	jsonPath := filepath.Join(dir, "report.json")
+
+	written, err := writeOutputReports(model.Report{
+		Scanner: model.ScannerInfo{Name: "SupaScope", Version: "test"},
+		Target:  model.Target{Type: model.TargetLocalPath, Value: "."},
+	}, markdownPath, jsonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{markdownPath, jsonPath}
+	if !reflect.DeepEqual(written, want) {
+		t.Fatalf("written = %#v, want %#v", written, want)
+	}
+
+	markdown, err := os.ReadFile(markdownPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(markdown), "# SupaScope Report") {
+		t.Fatalf("markdown report = %q", string(markdown))
+	}
+
+	jsonReport, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(jsonReport), "{\n") || strings.Contains(string(jsonReport), "# SupaScope Report") {
+		t.Fatalf("json report = %q", string(jsonReport))
 	}
 }

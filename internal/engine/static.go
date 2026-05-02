@@ -73,6 +73,9 @@ func (s Static) ScanURL(ctx context.Context, target string) ([]model.Discovery, 
 	discoveries = append(discoveries, scanAssetContent(root.finalURL, root.body)...)
 
 	queue := make([]queuedAsset, 0)
+	if candidate, ok := sourceMapCandidateURL(root.finalURL); ok {
+		queue = append(queue, queuedAsset{url: candidate, depth: 1})
+	}
 	for _, asset := range s.discoverAssetURLs(root.finalURL, root.body) {
 		queue = append(queue, queuedAsset{url: asset, depth: 1})
 	}
@@ -99,6 +102,9 @@ func (s Static) ScanURL(ctx context.Context, target string) ([]model.Discovery, 
 		}
 		discoveries = append(discoveries, scanAssetContent(fetched.finalURL, fetched.body)...)
 
+		if candidate, ok := sourceMapCandidateURL(fetched.finalURL); ok && !visited[candidate] && len(queue)+len(visited) < s.maxAssets {
+			queue = append(queue, queuedAsset{url: candidate, depth: next.depth + 1})
+		}
 		for _, child := range s.discoverAssetURLs(fetched.finalURL, fetched.body) {
 			if !visited[child] && len(queue)+len(visited) < s.maxAssets {
 				queue = append(queue, queuedAsset{url: child, depth: next.depth + 1})
@@ -174,6 +180,21 @@ func isSourceMapURL(rawURL string) bool {
 		return strings.HasSuffix(strings.ToLower(rawURL), ".map")
 	}
 	return strings.HasSuffix(strings.ToLower(parsed.Path), ".map")
+}
+
+func sourceMapCandidateURL(rawURL string) (string, bool) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", false
+	}
+	path := strings.ToLower(parsed.Path)
+	if !(strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".mjs") || strings.HasSuffix(path, ".css")) {
+		return "", false
+	}
+	parsed.Path += ".map"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), true
 }
 
 func DiscoverAssetURLs(base string, content string) []string {

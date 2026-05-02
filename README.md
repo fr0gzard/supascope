@@ -4,7 +4,7 @@ SupaScope is an authorized Supabase security reconnaissance scanner for detectin
 
 ## Status
 
-Go implementation in progress. The current implementation supports static public URL scans, local folder scans, recursive same-origin asset discovery, source map `sourcesContent` scanning, Supabase URL/key/endpoint detection, key classification, safe JWT metadata reporting, secret masking, active service checks, optional GraphQL introspection checks, JSON reports, and Markdown reports.
+Go implementation in progress. The current implementation supports static public URL scans, local folder scans, recursive same-origin asset discovery, adjacent source map probing, source map `sourcesContent` scanning, Supabase URL/key/endpoint detection, key classification, safe JWT metadata reporting, secret masking, active service checks, optional GraphQL introspection checks, JSON reports, and Markdown reports.
 
 ## Usage
 
@@ -12,7 +12,8 @@ Go implementation in progress. The current implementation supports static public
 go test ./...
 go run ./cmd/supascope scan --path . --json
 go run ./cmd/supascope scan https://example.com --yes
-go run ./cmd/supascope scan https://example.com --yes --profile active --json --output report.json
+go run ./cmd/supascope scan https://example.com --yes --profile active --output-json report.json
+go run ./cmd/supascope scan https://example.com --yes -o report.md --output-json report.json
 go run ./cmd/supascope scan --supabase-url https://project-ref.supabase.co --key sb_publishable_xxx --profile deep --graphql-schema-output schema.txt
 ```
 
@@ -26,16 +27,17 @@ Provide exactly one target:
 - `--path .` scans a local folder.
 - `--supabase-url https://project-ref.supabase.co` scans a known Supabase project URL.
 
-Passive URL scans inspect fetched public frontend assets. If referenced source maps are reachable, SupaScope parses `sourcesContent` and reports evidence against the original source entry inside the map. Source map scanning uses conservative early-stop limits so very large maps do not dominate passive scans.
+Passive URL scans inspect fetched public frontend assets. If referenced or adjacent source maps are reachable, SupaScope parses `sourcesContent` and reports evidence against the original source entry inside the map. Source map scanning uses conservative early-stop limits so very large maps do not dominate passive scans.
 
 If a fetched asset appears blocked by a WAF/CDN such as Cloudflare, Akamai, Fastly, Sucuri, Imperva, or a generic challenge page, SupaScope adds an informational scan coverage finding. This means passive results may be incomplete for blocked assets.
 
 ## Output
 
 - Default output is Markdown written to stdout.
-- `--json` writes JSON instead of Markdown.
-- `--output file` writes the selected report format to a file.
-- `--json --output report.json` writes JSON to `report.json`.
+- `--json` writes JSON to stdout instead of Markdown.
+- `--output file` or `-o file` writes a Markdown report to a file.
+- `--output-json file` or `-oj file` writes a JSON report to a file.
+- `--output report.md --output-json report.json` writes both report formats from one scan.
 - `--unsafe-show-secrets` prints full discovered secrets in reports. Use only in trusted local environments.
 
 ## Scan Controls

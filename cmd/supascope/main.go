@@ -16,12 +16,14 @@ import (
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "scan" {
-		fmt.Fprintln(os.Stderr, "usage: supascope scan [target] [--profile passive|active|deep] [--path dir] [--supabase-url url] [--key key] [--json] [--output report.md|report.json] [--yes] [--unsafe-show-secrets]")
+		fmt.Fprintln(os.Stderr, "usage: supascope scan [target] [--profile passive|active|deep] [--path dir] [--supabase-url url] [--key key] [--json] [--output report.md] [--output-json report.json] [--yes] [--unsafe-show-secrets]")
 		os.Exit(2)
 	}
 
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
 	var headers headerFlags
+	var output string
+	var outputJSON string
 	profile := fs.String("profile", "passive", "scan profile: passive, active, or deep")
 	path := fs.String("path", "", "local folder to scan")
 	supabaseURL := fs.String("supabase-url", "", "known Supabase project URL")
@@ -29,7 +31,10 @@ func main() {
 	userAgent := fs.String("user-agent", "", "User-Agent header for remote HTTP requests")
 	fs.Var(&headers, "header", "additional header for remote HTTP requests, formatted as 'Name: value'")
 	jsonOut := fs.Bool("json", false, "print JSON report")
-	output := fs.String("output", "", "write report to file; respects --json")
+	fs.StringVar(&output, "output", "", "write Markdown report to file")
+	fs.StringVar(&output, "o", "", "write Markdown report to file")
+	fs.StringVar(&outputJSON, "output-json", "", "write JSON report to file")
+	fs.StringVar(&outputJSON, "oj", "", "write JSON report to file")
 	showSecrets := fs.Bool("unsafe-show-secrets", false, "print full discovered secrets in reports")
 	debug := fs.Bool("debug", false, "print remote request diagnostics to stderr")
 	maxAssets := fs.Int("max-assets", 0, "maximum same-origin assets to fetch during URL scans")
@@ -62,7 +67,7 @@ func main() {
 		UserAgent:            *userAgent,
 		Headers:              parsedHeaders,
 		JSON:                 *jsonOut,
-		Output:               *output,
+		Output:               output,
 		ShowSecrets:          *showSecrets,
 		Debug:                *debug,
 		MaxAssets:            *maxAssets,
@@ -98,21 +103,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	if output != "" || outputJSON != "" {
+		written, err := writeOutputReports(result, output, outputJSON)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		for _, path := range written {
+			fmt.Printf("Report written to: %s\n", path)
+		}
+		return
+	}
+
 	rendered, err := renderReport(result, *jsonOut)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-
-	if *output != "" {
-		if err := os.WriteFile(*output, []byte(rendered), 0o644); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		fmt.Printf("Report written to: %s\n", *output)
-		return
-	}
-
 	fmt.Print(rendered)
 }
 
@@ -121,6 +128,27 @@ func renderReport(result model.Report, jsonOut bool) (string, error) {
 		return report.JSON(result)
 	}
 	return report.Markdown(result), nil
+}
+
+func writeOutputReports(result model.Report, markdownOutput string, jsonOutput string) ([]string, error) {
+	var written []string
+	if markdownOutput != "" {
+		if err := os.WriteFile(markdownOutput, []byte(report.Markdown(result)), 0o644); err != nil {
+			return nil, err
+		}
+		written = append(written, markdownOutput)
+	}
+	if jsonOutput != "" {
+		rendered, err := report.JSON(result)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(jsonOutput, []byte(rendered), 0o644); err != nil {
+			return nil, err
+		}
+		written = append(written, jsonOutput)
+	}
+	return written, nil
 }
 
 func normalizeScanArgs(args []string) []string {
@@ -135,6 +163,9 @@ func normalizeScanArgs(args []string) []string {
 		"--delay":                 true,
 		"--max-concurrency":       true,
 		"--output":                true,
+		"-o":                      true,
+		"--output-json":           true,
+		"-oj":                     true,
 		"--graphql-schema-output": true,
 	}
 

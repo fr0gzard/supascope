@@ -35,7 +35,11 @@ func ScanLocal(root string) ([]model.Discovery, error) {
 		if err != nil {
 			return nil
 		}
-		discoveries = append(discoveries, detect.Artifacts(string(content), model.Evidence{Source: "local", File: path})...)
+		text := string(content)
+		discoveries = append(discoveries, detect.Artifacts(text, model.Evidence{Source: "local", File: path})...)
+		if strings.EqualFold(filepath.Ext(path), ".map") {
+			discoveries = append(discoveries, scanSourceMap(path, text)...)
+		}
 		return nil
 	})
 
