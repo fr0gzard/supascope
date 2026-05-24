@@ -109,6 +109,31 @@ func TestShowSecretsReportsRawValues(t *testing.T) {
 	t.Fatal("expected finding evidence value to contain raw secret")
 }
 
+func TestHARScanDetectsObservedServices(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "network.har")
+	content := `{"log":{"entries":[{"request":{"method":"GET","url":"https://abcxyz.supabase.co/storage/v1/object/public/assets/logo.png","headers":[]},"response":{"content":{"text":""}}}]}}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := New().Scan(context.Background(), model.Options{
+		Target: model.Target{Type: model.TargetHAR, Value: path},
+		Yes:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Type != model.TargetHAR {
+		t.Fatalf("target type = %q, want har", result.Target.Type)
+	}
+	if result.Services.Storage != model.ServiceObserved {
+		t.Fatalf("Storage status = %q, want observed", result.Services.Storage)
+	}
+	if !hasCategory(result.Findings, "service_detection") {
+		t.Fatal("expected service detection finding")
+	}
+}
+
 func TestActiveChecksGenerateServiceStatusFindings(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

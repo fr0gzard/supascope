@@ -8,6 +8,7 @@ const (
 	TargetURL             TargetType = "url"
 	TargetLocalPath       TargetType = "local_path"
 	TargetSupabaseProject TargetType = "supabase_project"
+	TargetHAR             TargetType = "har"
 )
 
 type Target struct {
@@ -78,6 +79,8 @@ type Options struct {
 	ShowSecrets          bool
 	Yes                  bool
 	Dynamic              bool
+	DynamicWait          time.Duration
+	BrowserDebuggerURL   string
 	Interactive          bool
 	ActiveChecks         bool
 	ActiveStorageTests   bool

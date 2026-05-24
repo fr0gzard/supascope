@@ -8,6 +8,11 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
 
 - Local folder scans.
 - Static public URL scans.
+- Dynamic browser network discovery with `chromedp` behind `--dynamic`.
+- Configurable dynamic browser observation windows with `--dynamic-wait` for login-gated flows.
+- Existing Chrome attachment with `--attach-browser` or `--browser-debugger-url` for CAPTCHA/OAuth/SSO/wallet flows that automation cannot complete reliably.
+- Short dynamic scan aliases: `-y`, `-j`, `-d`, `-b`, and `-w`.
+- Offline HAR file scans.
 - Recursive same-origin asset discovery, including Next.js `_next/static` chunks.
 - Source map parsing for reachable `.map` files with `sourcesContent` scanning.
 - Adjacent source map probing for fetched `.js`, `.mjs`, and `.css` assets, such as `app.js.map`.
@@ -23,10 +28,13 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
 - Secret masking in reports.
 - Explicit unsafe opt-in for raw report values with `--unsafe-show-secrets`.
 - JSON and Markdown reports.
+- JSON config file support with CLI overrides via `--config`.
 - Custom remote request controls:
   - `--user-agent`
   - repeated `--header "Name: value"`
   - `--max-assets n`
+  - `--delay duration`
+  - `--max-concurrency n`
   - `--debug`
  - Default browser-like request headers are applied when no headers are provided. These include a modern User-Agent and common navigation headers to reduce WAF/edge blocking false positives. Use `--user-agent` or repeated `--header` to override defaults.
 - Read-only active service checks behind `--profile active`.
@@ -143,8 +151,5 @@ This passes as of this progress note.
 
 High-value next steps:
 
-- Add config file support for reusable scan settings.
 - Add broader framework-specific source map discovery heuristics beyond adjacent `.map` probing.
-- Add dynamic browser network discovery later, probably with `chromedp` or Playwright.
-- Add HAR import support.
-- Add rate limiting/pacing options, e.g. `--delay` and `--max-concurrency`.
+- Expand dynamic browser scanning with richer interaction hooks and configurable wait conditions.

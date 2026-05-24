@@ -13,7 +13,11 @@ go test ./...
 go run ./cmd/supascope scan --path . --json
 go run ./cmd/supascope scan https://example.com --yes
 go run ./cmd/supascope scan https://example.com --yes --profile active --output-json report.json
+go run ./cmd/supascope scan https://example.com --yes --dynamic --dynamic-wait 30s --json
+go run ./cmd/supascope scan https://example.com -y -d -w 30s -j
 go run ./cmd/supascope scan https://example.com --yes -o report.md --output-json report.json
+go run ./cmd/supascope scan --config supascope.config.json
+go run ./cmd/supascope scan --har network.har --json
 go run ./cmd/supascope scan --supabase-url https://project-ref.supabase.co --key sb_publishable_xxx --profile deep --graphql-schema-output schema.txt
 ```
 
@@ -25,6 +29,7 @@ Provide exactly one target:
 
 - `https://example.com` scans a public URL and recursively fetches same-origin assets.
 - `--path .` scans a local folder.
+- `--har network.har` scans an exported HTTP Archive file offline.
 - `--supabase-url https://project-ref.supabase.co` scans a known Supabase project URL.
 
 Passive URL scans inspect fetched public frontend assets. If referenced or adjacent source maps are reachable, SupaScope parses `sourcesContent` and reports evidence against the original source entry inside the map. Source map scanning uses conservative early-stop limits so very large maps do not dominate passive scans.
@@ -45,12 +50,50 @@ If a fetched asset appears blocked by a WAF/CDN such as Cloudflare, Akamai, Fast
 - `--profile passive` runs static/local scanning only. This is the default.
 - `--profile active` enables safe active service probes.
 - `--profile deep` enables active service probes and GraphQL introspection.
+- `--dynamic` loads public URL targets in a browser with `chromedp` and captures observed network traffic.
+- `--dynamic-wait duration` controls how long the browser stays open after page load to observe network traffic. Use longer windows for login-gated apps.
+- `--attach-browser` attaches dynamic scanning to Chrome on `http://127.0.0.1:9222`, useful for CAPTCHA, OAuth, wallet, and SSO flows.
+- `--browser-debugger-url url` attaches dynamic scanning to a custom Chrome DevTools URL.
+- `--interactive` runs the dynamic browser scan with a visible browser window.
+- Short aliases are available for common dynamic scans: `-y`, `-j`, `-d`, `-b`, and `-w`.
 - `--yes` confirms authorization for public URL scans.
 - `--user-agent value` sets the User-Agent for remote HTTP requests.
 - `--header "Name: value"` adds a remote HTTP request header. Repeat it for multiple headers.
 - `--max-assets n` limits recursive same-origin asset fetching during URL scans.
+- `--delay duration` pauses between remote request launches, for example `500ms`.
+- `--max-concurrency n` limits concurrent remote requests during URL scans and active probes.
+- `--config file` loads reusable scan settings from a JSON config file. Explicit CLI flags override config file values.
 - `--debug` prints request diagnostics to stderr.
  - When no headers are provided, SupaScope applies a set of browser-like default request headers (including a modern User-Agent and navigation headers) to improve passive fetch coverage and reduce false positives from WAF/CDN challenge pages. These defaults can be overridden via `--user-agent` or `--header`.
+
+## Config File
+
+Use `--config supascope.config.json` to load reusable scan settings. CLI flags override values from the config file.
+
+```json
+{
+  "target": "https://example.com",
+  "profile": "active",
+  "yes": true,
+  "maxAssets": 70,
+  "dynamic": true,
+  "dynamicWait": "30s",
+  "attachBrowser": true,
+  "headers": {
+    "Accept-Language": "en-US,en;q=0.9"
+  },
+  "output": "report.md",
+  "outputJson": "report.json",
+  "delay": "500ms",
+  "maxConcurrency": 4
+}
+```
+
+Supported target fields are `target`, `path`, `har`, and `supabaseUrl`. Provide exactly one target after CLI overrides are applied.
+
+## HAR Import
+
+Use `--har network.har` to scan an exported browser network log without visiting the target. HAR scans inspect request URLs, request headers, request bodies, and text response bodies for Supabase URLs, service endpoints, and keys. Secrets are masked in reports by default.
 
 ## Key And JWT Reporting
 
@@ -95,4 +138,29 @@ go run ./cmd/supascope scan --supabase-url https://project-ref.supabase.co --key
 - If the endpoint returns GraphQL errors or no schema, SupaScope generates an informational finding with the error message when available.
 - Use this only for projects you are authorized to test.
 
-Dynamic browser scanning is planned for a later phase using `chromedp`.
+## Dynamic Browser Scanning
+
+Dynamic browser scanning is enabled with `--dynamic` for public URL targets. It uses `chromedp` to load the page, captures request URLs, request headers, request bodies when available, response URLs, response headers, and available text response bodies, then runs the same Supabase artifact detection used by static and HAR scans.
+
+Use `--interactive` with `--dynamic --dynamic-wait 60s` or longer to run with a visible browser window for sites that need manual login or navigation. Session data is not persisted by SupaScope.
+
+For Cloudflare CAPTCHA, OAuth, wallet, or SSO flows, prefer attaching to a normal Chrome session you control. Start Chrome with remote debugging and a dedicated profile, then run SupaScope against that browser:
+
+```powershell
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="$env:TEMP\supascope-chrome"
+go run ./cmd/supascope scan https://example.com --yes --dynamic --browser-debugger-url http://127.0.0.1:9222 --dynamic-wait 120s --json
+```
+
+Complete CAPTCHA/OAuth/login in that browser while SupaScope observes network traffic. SupaScope does not bypass CAPTCHA or OAuth protections.
+
+Short form:
+
+```powershell
+go run ./cmd/supascope scan https://example.com --yes --attach-browser --wait 120s --json
+```
+
+Shortest common form:
+
+```powershell
+go run ./cmd/supascope scan https://example.com -y -b -w 120s -j
+```

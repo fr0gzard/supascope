@@ -30,6 +30,12 @@ func (s Scanner) Scan(ctx context.Context, opts model.Options) (model.Report, er
 			return model.Report{}, err
 		}
 		discoveries = append(discoveries, found...)
+	case model.TargetHAR:
+		found, err := engine.ScanHAR(opts.Target.Value)
+		if err != nil {
+			return model.Report{}, err
+		}
+		discoveries = append(discoveries, found...)
 	case model.TargetURL:
 		found, err := engine.NewStatic(opts.UserAgent, opts.Headers, opts.Debug, opts.MaxAssets, engine.StaticOptions{
 			Delay:          opts.Delay,
@@ -39,6 +45,20 @@ func (s Scanner) Scan(ctx context.Context, opts model.Options) (model.Report, er
 			return model.Report{}, err
 		}
 		discoveries = append(discoveries, found...)
+		if opts.Dynamic {
+			dynamicFound, err := engine.ScanDynamic(ctx, opts.Target.Value, engine.DynamicOptions{
+				UserAgent:          opts.UserAgent,
+				Headers:            opts.Headers,
+				Wait:               opts.DynamicWait,
+				BrowserDebuggerURL: opts.BrowserDebuggerURL,
+				Interactive:        opts.Interactive,
+				Debug:              opts.Debug,
+			})
+			if err != nil {
+				return model.Report{}, err
+			}
+			discoveries = append(discoveries, dynamicFound...)
+		}
 	case model.TargetSupabaseProject:
 		ev := model.Evidence{Source: "provided", URL: opts.Target.Value}
 		discoveries = append(discoveries, model.Discovery{Type: "supabase_url", Value: opts.Target.Value, Source: "provided", Evidence: &ev})

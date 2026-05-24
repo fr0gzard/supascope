@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
@@ -14,9 +15,11 @@ import (
 	"supascope/internal/scanner"
 )
 
+const defaultBrowserDebuggerURL = "http://127.0.0.1:9222"
+
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "scan" {
-		fmt.Fprintln(os.Stderr, "usage: supascope scan [target] [--profile passive|active|deep] [--path dir] [--supabase-url url] [--key key] [--json] [--output report.md] [--output-json report.json] [--yes] [--unsafe-show-secrets]")
+		fmt.Fprintln(os.Stderr, "usage: supascope scan [target] [--config file] [--profile passive|active|deep] [--path dir] [--har file] [--supabase-url url] [--key key] [--json|-j] [--dynamic|-d] [--wait|-w duration] [--attach-browser|-b] [--yes|-y]")
 		os.Exit(2)
 	}
 
@@ -24,13 +27,17 @@ func main() {
 	var headers headerFlags
 	var output string
 	var outputJSON string
+	configPath := fs.String("config", "", "load scan settings from JSON config file")
 	profile := fs.String("profile", "passive", "scan profile: passive, active, or deep")
 	path := fs.String("path", "", "local folder to scan")
+	har := fs.String("har", "", "HAR file to scan")
 	supabaseURL := fs.String("supabase-url", "", "known Supabase project URL")
 	key := fs.String("key", "", "Supabase anon or publishable key")
 	userAgent := fs.String("user-agent", "", "User-Agent header for remote HTTP requests")
 	fs.Var(&headers, "header", "additional header for remote HTTP requests, formatted as 'Name: value'")
-	jsonOut := fs.Bool("json", false, "print JSON report")
+	var jsonOut bool
+	fs.BoolVar(&jsonOut, "json", false, "print JSON report")
+	fs.BoolVar(&jsonOut, "j", false, "print JSON report")
 	fs.StringVar(&output, "output", "", "write Markdown report to file")
 	fs.StringVar(&output, "o", "", "write Markdown report to file")
 	fs.StringVar(&outputJSON, "output-json", "", "write JSON report to file")
@@ -38,19 +45,32 @@ func main() {
 	showSecrets := fs.Bool("unsafe-show-secrets", false, "print full discovered secrets in reports")
 	debug := fs.Bool("debug", false, "print remote request diagnostics to stderr")
 	maxAssets := fs.Int("max-assets", 0, "maximum same-origin assets to fetch during URL scans")
-	yes := fs.Bool("yes", false, "confirm authorization notice for public URL scans")
-	dynamic := fs.Bool("dynamic", false, "dynamic browser scan; planned for chromedp phase")
-	interactive := fs.Bool("interactive", false, "interactive dynamic scan; planned for chromedp phase")
+	var yes bool
+	fs.BoolVar(&yes, "yes", false, "confirm authorization notice for public URL scans")
+	fs.BoolVar(&yes, "y", false, "confirm authorization notice for public URL scans")
+	var dynamic bool
+	fs.BoolVar(&dynamic, "dynamic", false, "capture browser network traffic with chromedp")
+	fs.BoolVar(&dynamic, "d", false, "capture browser network traffic with chromedp")
+	var dynamicWait time.Duration
+	fs.DurationVar(&dynamicWait, "dynamic-wait", 2*time.Second, "time to observe browser network traffic after page load")
+	fs.DurationVar(&dynamicWait, "wait", 2*time.Second, "alias for --dynamic-wait")
+	fs.DurationVar(&dynamicWait, "w", 2*time.Second, "alias for --dynamic-wait")
+	var attachBrowser bool
+	fs.BoolVar(&attachBrowser, "attach-browser", false, "attach to Chrome at http://127.0.0.1:9222 and observe browser traffic")
+	fs.BoolVar(&attachBrowser, "b", false, "attach to Chrome at http://127.0.0.1:9222 and observe browser traffic")
+	browserDebuggerURL := fs.String("browser-debugger-url", "", "attach dynamic scan to an existing Chrome DevTools URL, e.g. http://127.0.0.1:9222")
+	interactive := fs.Bool("interactive", false, "run dynamic browser scan with a visible browser")
 	activeStorage := fs.Bool("active-storage-tests", false, "enable active storage tests")
 	graphqlIntrospection := fs.Bool("graphql-introspection", false, "enable GraphQL introspection probe")
 	graphqlSchemaOutput := fs.String("graphql-schema-output", "", "write GraphQL introspection response to a text file")
-	delay := fs.Duration("delay", 0, "delay between active probes (e.g. 500ms)")
-	maxConcurrency := fs.Int("max-concurrency", 4, "maximum concurrent active probes")
+	delay := fs.Duration("delay", 0, "delay between remote requests (e.g. 500ms)")
+	maxConcurrency := fs.Int("max-concurrency", 4, "maximum concurrent remote requests")
 
 	if err := fs.Parse(normalizeScanArgs(os.Args[2:])); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	setFlags := visitedFlags(fs)
 
 	parsedHeaders, err := parseHeaders(headers)
 	if err != nil {
@@ -58,28 +78,52 @@ func main() {
 		os.Exit(2)
 	}
 
-	opts, err := scanOptions(scanConfig{
+	config := scanConfig{}
+	if *configPath != "" {
+		fileConfig, err := readScanConfigFile(*configPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		config, err = scanConfigFromFile(fileConfig)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+	}
+
+	config = mergeCLIConfig(config, scanConfig{
 		Args:                 fs.Args(),
 		Profile:              *profile,
 		Path:                 *path,
+		HAR:                  *har,
 		SupabaseURL:          *supabaseURL,
 		Key:                  *key,
 		UserAgent:            *userAgent,
 		Headers:              parsedHeaders,
-		JSON:                 *jsonOut,
+		JSON:                 jsonOut,
 		Output:               output,
+		OutputJSON:           outputJSON,
 		ShowSecrets:          *showSecrets,
 		Debug:                *debug,
 		MaxAssets:            *maxAssets,
-		Yes:                  *yes,
-		Dynamic:              *dynamic,
+		Yes:                  yes,
+		Dynamic:              dynamic,
+		DynamicWait:          dynamicWait,
+		AttachBrowser:        attachBrowser,
+		BrowserDebuggerURL:   *browserDebuggerURL,
 		Interactive:          *interactive,
 		ActiveStorageTests:   *activeStorage,
 		GraphQLIntrospection: *graphqlIntrospection,
 		GraphQLSchemaOutput:  *graphqlSchemaOutput,
 		Delay:                *delay,
 		MaxConcurrency:       *maxConcurrency,
-	})
+	}, setFlags)
+	jsonOut = config.JSON
+	output = config.Output
+	outputJSON = config.OutputJSON
+
+	opts, err := scanOptions(config)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -115,7 +159,7 @@ func main() {
 		return
 	}
 
-	rendered, err := renderReport(result, *jsonOut)
+	rendered, err := renderReport(result, jsonOut)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -154,13 +198,19 @@ func writeOutputReports(result model.Report, markdownOutput string, jsonOutput s
 func normalizeScanArgs(args []string) []string {
 	valueFlags := map[string]bool{
 		"--profile":               true,
+		"--config":                true,
 		"--path":                  true,
+		"--har":                   true,
 		"--supabase-url":          true,
 		"--key":                   true,
 		"--user-agent":            true,
 		"--header":                true,
 		"--max-assets":            true,
 		"--delay":                 true,
+		"--dynamic-wait":          true,
+		"--wait":                  true,
+		"-w":                      true,
+		"--browser-debugger-url":  true,
 		"--max-concurrency":       true,
 		"--output":                true,
 		"-o":                      true,
@@ -225,21 +275,275 @@ func parseHeaders(values []string) (map[string]string, error) {
 	return headers, nil
 }
 
+type scanFileConfig struct {
+	Target               string            `json:"target"`
+	Path                 string            `json:"path"`
+	HAR                  string            `json:"har"`
+	SupabaseURL          string            `json:"supabaseUrl"`
+	Key                  string            `json:"key"`
+	Profile              string            `json:"profile"`
+	UserAgent            string            `json:"userAgent"`
+	Headers              map[string]string `json:"headers"`
+	JSON                 *bool             `json:"json"`
+	Output               string            `json:"output"`
+	OutputJSON           string            `json:"outputJson"`
+	ShowSecrets          *bool             `json:"unsafeShowSecrets"`
+	Debug                *bool             `json:"debug"`
+	MaxAssets            *int              `json:"maxAssets"`
+	Yes                  *bool             `json:"yes"`
+	Dynamic              *bool             `json:"dynamic"`
+	DynamicWait          string            `json:"dynamicWait"`
+	AttachBrowser        *bool             `json:"attachBrowser"`
+	BrowserDebuggerURL   string            `json:"browserDebuggerUrl"`
+	Interactive          *bool             `json:"interactive"`
+	ActiveStorageTests   *bool             `json:"activeStorageTests"`
+	GraphQLIntrospection *bool             `json:"graphqlIntrospection"`
+	GraphQLSchemaOutput  string            `json:"graphqlSchemaOutput"`
+	Delay                string            `json:"delay"`
+	MaxConcurrency       *int              `json:"maxConcurrency"`
+}
+
+func readScanConfigFile(path string) (scanFileConfig, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return scanFileConfig{}, err
+	}
+	var config scanFileConfig
+	if err := json.Unmarshal(content, &config); err != nil {
+		return scanFileConfig{}, fmt.Errorf("invalid config file %q: %w", path, err)
+	}
+	return config, nil
+}
+
+func scanConfigFromFile(fileConfig scanFileConfig) (scanConfig, error) {
+	config := scanConfig{
+		Profile:             fileConfig.Profile,
+		Path:                fileConfig.Path,
+		HAR:                 fileConfig.HAR,
+		SupabaseURL:         fileConfig.SupabaseURL,
+		Key:                 fileConfig.Key,
+		UserAgent:           fileConfig.UserAgent,
+		Headers:             canonicalHeaders(fileConfig.Headers),
+		BrowserDebuggerURL:  fileConfig.BrowserDebuggerURL,
+		Output:              fileConfig.Output,
+		OutputJSON:          fileConfig.OutputJSON,
+		GraphQLSchemaOutput: fileConfig.GraphQLSchemaOutput,
+	}
+	if strings.TrimSpace(fileConfig.Target) != "" {
+		config.Args = []string{fileConfig.Target}
+	}
+	if fileConfig.JSON != nil {
+		config.JSON = *fileConfig.JSON
+	}
+	if fileConfig.ShowSecrets != nil {
+		config.ShowSecrets = *fileConfig.ShowSecrets
+	}
+	if fileConfig.Debug != nil {
+		config.Debug = *fileConfig.Debug
+	}
+	if fileConfig.MaxAssets != nil {
+		config.MaxAssets = *fileConfig.MaxAssets
+	}
+	if fileConfig.Yes != nil {
+		config.Yes = *fileConfig.Yes
+	}
+	if fileConfig.Dynamic != nil {
+		config.Dynamic = *fileConfig.Dynamic
+	}
+	if fileConfig.AttachBrowser != nil {
+		config.AttachBrowser = *fileConfig.AttachBrowser
+	}
+	if fileConfig.DynamicWait != "" {
+		dynamicWait, err := time.ParseDuration(fileConfig.DynamicWait)
+		if err != nil {
+			return scanConfig{}, fmt.Errorf("invalid config dynamicWait %q: %w", fileConfig.DynamicWait, err)
+		}
+		config.DynamicWait = dynamicWait
+	}
+	if fileConfig.Interactive != nil {
+		config.Interactive = *fileConfig.Interactive
+	}
+	if fileConfig.ActiveStorageTests != nil {
+		config.ActiveStorageTests = *fileConfig.ActiveStorageTests
+	}
+	if fileConfig.GraphQLIntrospection != nil {
+		config.GraphQLIntrospection = *fileConfig.GraphQLIntrospection
+	}
+	if fileConfig.Delay != "" {
+		delay, err := time.ParseDuration(fileConfig.Delay)
+		if err != nil {
+			return scanConfig{}, fmt.Errorf("invalid config delay %q: %w", fileConfig.Delay, err)
+		}
+		config.Delay = delay
+	}
+	if fileConfig.MaxConcurrency != nil {
+		config.MaxConcurrency = *fileConfig.MaxConcurrency
+	}
+	return config, nil
+}
+
+func canonicalHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(headers))
+	for name, value := range headers {
+		name = http.CanonicalHeaderKey(strings.TrimSpace(name))
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" {
+			continue
+		}
+		out[name] = value
+	}
+	return out
+}
+
+func visitedFlags(fs *flag.FlagSet) map[string]bool {
+	visited := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) {
+		visited[f.Name] = true
+	})
+	return visited
+}
+
+func flagSet(visited map[string]bool, names ...string) bool {
+	for _, name := range names {
+		if visited[name] {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeCLIConfig(config scanConfig, cli scanConfig, setFlags map[string]bool) scanConfig {
+	if len(cli.Args) > 0 {
+		config.Args = cli.Args
+		config.Path = ""
+		config.HAR = ""
+		config.SupabaseURL = ""
+	}
+	if flagSet(setFlags, "profile") {
+		config.Profile = cli.Profile
+	}
+	if flagSet(setFlags, "path") {
+		config.Path = cli.Path
+		config.Args = nil
+		config.HAR = ""
+		config.SupabaseURL = ""
+	}
+	if flagSet(setFlags, "har") {
+		config.HAR = cli.HAR
+		config.Args = nil
+		config.Path = ""
+		config.SupabaseURL = ""
+	}
+	if flagSet(setFlags, "supabase-url") {
+		config.SupabaseURL = cli.SupabaseURL
+		config.Args = nil
+		config.Path = ""
+		config.HAR = ""
+	}
+	if flagSet(setFlags, "key") {
+		config.Key = cli.Key
+	}
+	if flagSet(setFlags, "user-agent") {
+		config.UserAgent = cli.UserAgent
+	}
+	if len(cli.Headers) > 0 {
+		config.Headers = mergeHeaderMaps(config.Headers, cli.Headers)
+	}
+	if flagSet(setFlags, "json", "j") {
+		config.JSON = cli.JSON
+	}
+	if flagSet(setFlags, "output", "o") {
+		config.Output = cli.Output
+	}
+	if flagSet(setFlags, "output-json", "oj") {
+		config.OutputJSON = cli.OutputJSON
+	}
+	if flagSet(setFlags, "unsafe-show-secrets") {
+		config.ShowSecrets = cli.ShowSecrets
+	}
+	if flagSet(setFlags, "debug") {
+		config.Debug = cli.Debug
+	}
+	if flagSet(setFlags, "max-assets") {
+		config.MaxAssets = cli.MaxAssets
+	}
+	if flagSet(setFlags, "yes", "y") {
+		config.Yes = cli.Yes
+	}
+	if flagSet(setFlags, "dynamic", "d") {
+		config.Dynamic = cli.Dynamic
+	}
+	if flagSet(setFlags, "dynamic-wait", "wait", "w") {
+		config.DynamicWait = cli.DynamicWait
+	} else if config.DynamicWait == 0 {
+		config.DynamicWait = cli.DynamicWait
+	}
+	if flagSet(setFlags, "attach-browser", "b") {
+		config.AttachBrowser = cli.AttachBrowser
+	}
+	if flagSet(setFlags, "browser-debugger-url") {
+		config.BrowserDebuggerURL = cli.BrowserDebuggerURL
+	}
+	if flagSet(setFlags, "interactive") {
+		config.Interactive = cli.Interactive
+	}
+	if flagSet(setFlags, "active-storage-tests") {
+		config.ActiveStorageTests = cli.ActiveStorageTests
+	}
+	if flagSet(setFlags, "graphql-introspection") {
+		config.GraphQLIntrospection = cli.GraphQLIntrospection
+	}
+	if flagSet(setFlags, "graphql-schema-output") {
+		config.GraphQLSchemaOutput = cli.GraphQLSchemaOutput
+	}
+	if flagSet(setFlags, "delay") {
+		config.Delay = cli.Delay
+	}
+	if flagSet(setFlags, "max-concurrency") {
+		config.MaxConcurrency = cli.MaxConcurrency
+	} else if config.MaxConcurrency == 0 {
+		config.MaxConcurrency = cli.MaxConcurrency
+	}
+	return config
+}
+
+func mergeHeaderMaps(base map[string]string, overrides map[string]string) map[string]string {
+	if len(base) == 0 {
+		return overrides
+	}
+	merged := make(map[string]string, len(base)+len(overrides))
+	for name, value := range base {
+		merged[name] = value
+	}
+	for name, value := range overrides {
+		merged[name] = value
+	}
+	return merged
+}
+
 type scanConfig struct {
 	Args                 []string
 	Profile              string
 	Path                 string
+	HAR                  string
 	SupabaseURL          string
 	Key                  string
 	UserAgent            string
 	Headers              map[string]string
 	JSON                 bool
 	Output               string
+	OutputJSON           string
 	ShowSecrets          bool
 	Debug                bool
 	MaxAssets            int
 	Yes                  bool
 	Dynamic              bool
+	DynamicWait          time.Duration
+	AttachBrowser        bool
+	BrowserDebuggerURL   string
 	Interactive          bool
 	ActiveChecks         bool
 	ActiveStorageTests   bool
@@ -262,17 +566,22 @@ func scanOptions(config scanConfig) (model.Options, error) {
 	if config.Path != "" {
 		targets++
 	}
+	if config.HAR != "" {
+		targets++
+	}
 	if config.SupabaseURL != "" {
 		targets++
 	}
 	if targets != 1 {
-		return model.Options{}, fmt.Errorf("provide exactly one scan target: URL, --path, or --supabase-url")
+		return model.Options{}, fmt.Errorf("provide exactly one scan target: URL, --path, --har, or --supabase-url")
 	}
 
 	var target model.Target
 	switch {
 	case config.Path != "":
 		target = model.Target{Type: model.TargetLocalPath, Value: config.Path}
+	case config.HAR != "":
+		target = model.Target{Type: model.TargetHAR, Value: config.HAR}
 	case config.SupabaseURL != "":
 		target = model.Target{Type: model.TargetSupabaseProject, Value: config.SupabaseURL}
 	default:
@@ -291,6 +600,8 @@ func scanOptions(config scanConfig) (model.Options, error) {
 		ShowSecrets:          config.ShowSecrets,
 		Yes:                  config.Yes,
 		Dynamic:              config.Dynamic,
+		DynamicWait:          config.DynamicWait,
+		BrowserDebuggerURL:   config.BrowserDebuggerURL,
 		Interactive:          config.Interactive,
 		ActiveChecks:         config.ActiveChecks,
 		ActiveStorageTests:   config.ActiveStorageTests,
@@ -317,6 +628,12 @@ func applyProfile(config scanConfig) scanConfig {
 	}
 	if config.GraphQLSchemaOutput != "" {
 		config.GraphQLIntrospection = true
+	}
+	if config.AttachBrowser && config.BrowserDebuggerURL == "" {
+		config.BrowserDebuggerURL = defaultBrowserDebuggerURL
+	}
+	if config.BrowserDebuggerURL != "" || config.Interactive {
+		config.Dynamic = true
 	}
 	return config
 }
