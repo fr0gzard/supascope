@@ -32,7 +32,9 @@ Provide exactly one target:
 - `--har network.har` scans an exported HTTP Archive file offline.
 - `--supabase-url https://project-ref.supabase.co` scans a known Supabase project URL.
 
-Passive URL scans inspect fetched public frontend assets. If referenced or adjacent source maps are reachable, SupaScope parses `sourcesContent` and reports evidence against the original source entry inside the map. Source map scanning uses conservative early-stop limits so very large maps do not dominate passive scans.
+Passive URL scans inspect fetched public frontend assets. If referenced, adjacent, or framework-inferred source maps are reachable, SupaScope parses `sourcesContent` and reports evidence against the original source entry inside the map. Source map scanning uses conservative early-stop limits so very large maps do not dominate passive scans.
+
+Framework source map discovery includes same-origin chunk references from common build directories such as `_next/static`, `_nuxt`, `_astro`, `_app/immutable`, `assets`, `build`, `static`, `packs`, `js`, and `css`. For hashed bundle names such as `index-Dg_4Nfjf.js`, SupaScope also probes conservative hash-stripped map candidates such as `index.js.map` within the same asset directory.
 
 If a fetched asset appears blocked by a WAF/CDN such as Cloudflare, Akamai, Fastly, Sucuri, Imperva, or a generic challenge page, SupaScope adds an informational scan coverage finding. This means passive results may be incomplete for blocked assets.
 

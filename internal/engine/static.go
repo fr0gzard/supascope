@@ -20,6 +20,7 @@ const (
 	defaultMaxAssets          = 50
 	maxDepth                  = 3
 	defaultUserAgent          = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 SupaScope/0.1"
+	minHashSegmentLength      = 6
 	maxSourceMapSources       = 250
 	maxSourceMapBytesScanned  = 2 * 1024 * 1024
 	maxSourceMapDiscoveries   = 25
@@ -29,7 +30,7 @@ const (
 
 var assetPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:src|href)=["']([^"']+\.(?:js|mjs|css|map|json)(?:\?[^"']*)?)["']`),
-	regexp.MustCompile(`["']([^"']*(?:/_next/static/|/assets/|/static/js/|/static/css/|/build/assets/)[^"']+\.(?:js|mjs|css|map|json)(?:\?[^"']*)?)["']`),
+	regexp.MustCompile(`["']([^"']*(?:/_next/static/|/_nuxt/|/_astro/|/_app/immutable/|/assets/|/static/js/|/static/css/|/build/assets/|/build/|/dist/|/packs/|/js/|/css/)[^"']+\.(?:js|mjs|css|map|json)(?:\?[^"']*)?)["']`),
 	regexp.MustCompile(`sourceMappingURL=([^\s*]+)`),
 	regexp.MustCompile(`(?i)import\(\s*["']([^"']+\.(?:js|mjs)(?:\?[^"']*)?)["']\s*\)`),
 	regexp.MustCompile(`(?i)url\(\s*["']?([^"')]+\.(?:css|map|json)(?:\?[^"')]+)?)["']?\s*\)`),
@@ -87,12 +88,12 @@ func (s Static) ScanURL(ctx context.Context, target string) ([]model.Discovery, 
 	discoveries = append(discoveries, scanAssetContent(root.finalURL, root.body)...)
 
 	queue := make([]queuedAsset, 0)
-	if candidate, ok := sourceMapCandidateURL(root.finalURL); ok {
-		queue = append(queue, queuedAsset{url: candidate, depth: 1})
-	}
+	queued := map[string]bool{}
+	enqueueAssets(&queue, queued, nil, s.maxAssets, sourceMapCandidateURLs(root.finalURL), 1)
 	for _, asset := range s.discoverAssetURLs(root.finalURL, root.body) {
-		queue = append(queue, queuedAsset{url: asset, depth: 1})
+		enqueueAsset(&queue, queued, nil, s.maxAssets, asset, 1)
 	}
+	enqueueAssets(&queue, queued, nil, s.maxAssets, frameworkSourceMapCandidateURLs(root.finalURL, root.body), 1)
 	s.debugf("root assets: queued=%d", len(queue))
 
 	visited := map[string]bool{}
@@ -125,14 +126,11 @@ func (s Static) ScanURL(ctx context.Context, target string) ([]model.Discovery, 
 			}
 			discoveries = append(discoveries, scanAssetContent(fetched.finalURL, fetched.body)...)
 
-			if candidate, ok := sourceMapCandidateURL(fetched.finalURL); ok && !visited[candidate] && len(queue)+len(visited) < s.maxAssets {
-				queue = append(queue, queuedAsset{url: candidate, depth: next.depth + 1})
-			}
+			enqueueAssets(&queue, queued, visited, s.maxAssets, sourceMapCandidateURLs(fetched.finalURL), next.depth+1)
 			for _, child := range s.discoverAssetURLs(fetched.finalURL, fetched.body) {
-				if !visited[child] && len(queue)+len(visited) < s.maxAssets {
-					queue = append(queue, queuedAsset{url: child, depth: next.depth + 1})
-				}
+				enqueueAsset(&queue, queued, visited, s.maxAssets, child, next.depth+1)
 			}
+			enqueueAssets(&queue, queued, visited, s.maxAssets, frameworkSourceMapCandidateURLs(fetched.finalURL, fetched.body), next.depth+1)
 		}
 	}
 	s.debugf("done: visited_assets=%d queued_remaining=%d max_assets=%d discoveries=%d", len(visited), len(queue), s.maxAssets, len(discoveries))
@@ -245,18 +243,111 @@ func isSourceMapURL(rawURL string) bool {
 }
 
 func sourceMapCandidateURL(rawURL string) (string, bool) {
+	candidates := sourceMapCandidateURLs(rawURL)
+	if len(candidates) == 0 {
+		return "", false
+	}
+	return candidates[0], true
+}
+
+func sourceMapCandidateURLs(rawURL string) []string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return "", false
+		return nil
 	}
 	path := strings.ToLower(parsed.Path)
 	if !(strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".mjs") || strings.HasSuffix(path, ".css")) {
+		return nil
+	}
+
+	adjacent := *parsed
+	adjacent.Path += ".map"
+	adjacent.RawQuery = ""
+	adjacent.Fragment = ""
+	candidates := []string{adjacent.String()}
+
+	if hashStripped, ok := hashStrippedSourceMapCandidateURL(parsed); ok && hashStripped != candidates[0] {
+		candidates = append(candidates, hashStripped)
+	}
+	return candidates
+}
+
+func hashStrippedSourceMapCandidateURL(parsed *url.URL) (string, bool) {
+	basePath := parsed.Path
+	lastSlash := strings.LastIndex(basePath, "/")
+	dir := ""
+	file := basePath
+	if lastSlash >= 0 {
+		dir = basePath[:lastSlash+1]
+		file = basePath[lastSlash+1:]
+	}
+
+	ext := ""
+	for _, candidateExt := range []string{".mjs", ".js", ".css"} {
+		if strings.HasSuffix(strings.ToLower(file), candidateExt) {
+			ext = file[len(file)-len(candidateExt):]
+			file = file[:len(file)-len(candidateExt)]
+			break
+		}
+	}
+	if ext == "" {
 		return "", false
 	}
-	parsed.Path += ".map"
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return parsed.String(), true
+
+	separator := strings.LastIndexAny(file, "-.")
+	if separator <= 0 || separator == len(file)-1 {
+		return "", false
+	}
+	if !looksLikeAssetHash(file[separator+1:]) {
+		return "", false
+	}
+
+	candidate := *parsed
+	candidate.Path = dir + file[:separator] + ext + ".map"
+	candidate.RawQuery = ""
+	candidate.Fragment = ""
+	return candidate.String(), true
+}
+
+func looksLikeAssetHash(value string) bool {
+	if len(value) < minHashSegmentLength {
+		return false
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func frameworkSourceMapCandidateURLs(base string, content string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, asset := range DiscoverAssetURLs(base, content) {
+		for _, candidate := range sourceMapCandidateURLs(asset) {
+			if !seen[candidate] {
+				seen[candidate] = true
+				out = append(out, candidate)
+			}
+		}
+	}
+	return out
+}
+
+func enqueueAssets(queue *[]queuedAsset, queued map[string]bool, visited map[string]bool, maxAssets int, urls []string, depth int) {
+	for _, rawURL := range urls {
+		enqueueAsset(queue, queued, visited, maxAssets, rawURL, depth)
+	}
+}
+
+func enqueueAsset(queue *[]queuedAsset, queued map[string]bool, visited map[string]bool, maxAssets int, rawURL string, depth int) {
+	if rawURL == "" || queued[rawURL] || visited[rawURL] || len(*queue)+len(visited) >= maxAssets {
+		return
+	}
+	queued[rawURL] = true
+	*queue = append(*queue, queuedAsset{url: rawURL, depth: depth})
 }
 
 func DiscoverAssetURLs(base string, content string) []string {

@@ -105,6 +105,9 @@ func TestDiscoverAssetURLsFromBundles(t *testing.T) {
 	content := `
 		const viteChunk = "/assets/vendor-a1b2c3.js";
 		const nextChunk = "/_next/static/chunks/app/page-123.js";
+		const nuxtChunk = "/_nuxt/app.123456.js";
+		const astroChunk = "/_astro/Page.abcdef.css";
+		const svelteKitChunk = "/_app/immutable/chunks/entry.abcdef.js";
 		const webpackChunk = "/static/js/451.abcd.js";
 		import("/assets/lazy.mjs");
 		//# sourceMappingURL=app.js.map
@@ -114,6 +117,9 @@ func TestDiscoverAssetURLsFromBundles(t *testing.T) {
 	want := []string{
 		"https://example.com/assets/vendor-a1b2c3.js",
 		"https://example.com/_next/static/chunks/app/page-123.js",
+		"https://example.com/_nuxt/app.123456.js",
+		"https://example.com/_astro/Page.abcdef.css",
+		"https://example.com/_app/immutable/chunks/entry.abcdef.js",
 		"https://example.com/static/js/451.abcd.js",
 		"https://example.com/assets/lazy.mjs",
 		"https://example.com/assets/app.js.map",
@@ -122,6 +128,37 @@ func TestDiscoverAssetURLsFromBundles(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("DiscoverAssetURLs() = %#v, want %#v", got, want)
 	}
+}
+
+func TestScanURLGuessesHashStrippedFrameworkSourceMap(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<script>window.__chunks=["/assets/index-Dg_4Nfjf.js"]</script>`))
+		case "/assets/index-Dg_4Nfjf.js":
+			_, _ = w.Write([]byte(`console.log("app");`))
+		case "/assets/index.js.map":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":3,"sources":["src/lib/supabase.ts"],"sourcesContent":["export const supabaseUrl = 'https://abcxyz.supabase.co';"],"mappings":""}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	discoveries, err := NewStatic("", nil, false, 0).ScanURL(context.Background(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, discovery := range discoveries {
+		if discovery.Type != "supabase_url" || discovery.Evidence == nil {
+			continue
+		}
+		if discovery.Evidence.Source == "source_map" && discovery.Evidence.URL == server.URL+"/assets/index.js.map" {
+			return
+		}
+	}
+	t.Fatalf("expected hash-stripped source map discovery, got %#v", discoveries)
 }
 
 func TestScanURLScansSourceMapSourcesContent(t *testing.T) {
@@ -236,6 +273,7 @@ func TestSourceMapCandidateURL(t *testing.T) {
 		ok   bool
 	}{
 		{name: "js", raw: "https://example.com/assets/app.js?v=1", want: "https://example.com/assets/app.js.map", ok: true},
+		{name: "hashed js", raw: "https://example.com/assets/app-a1b2c3d4.js", want: "https://example.com/assets/app-a1b2c3d4.js.map", ok: true},
 		{name: "mjs", raw: "https://example.com/assets/app.mjs", want: "https://example.com/assets/app.mjs.map", ok: true},
 		{name: "css", raw: "https://example.com/assets/app.css#hash", want: "https://example.com/assets/app.css.map", ok: true},
 		{name: "map", raw: "https://example.com/assets/app.js.map", ok: false},
@@ -249,6 +287,17 @@ func TestSourceMapCandidateURL(t *testing.T) {
 				t.Fatalf("sourceMapCandidateURL(%q) = %q, %v; want %q, %v", test.raw, got, ok, test.want, test.ok)
 			}
 		})
+	}
+}
+
+func TestSourceMapCandidateURLsIncludesHashStrippedVariants(t *testing.T) {
+	got := sourceMapCandidateURLs("https://example.com/assets/index-Dg_4Nfjf.js?v=1#hash")
+	want := []string{
+		"https://example.com/assets/index-Dg_4Nfjf.js.map",
+		"https://example.com/assets/index.js.map",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sourceMapCandidateURLs() = %#v, want %#v", got, want)
 	}
 }
 

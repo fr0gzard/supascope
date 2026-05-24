@@ -16,6 +16,7 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
 - Recursive same-origin asset discovery, including Next.js `_next/static` chunks.
 - Source map parsing for reachable `.map` files with `sourcesContent` scanning.
 - Adjacent source map probing for fetched `.js`, `.mjs`, and `.css` assets, such as `app.js.map`.
+- Framework source map heuristics for common chunk directories and hash-stripped map candidates.
 - Source-aware local `.map` scanning that reports evidence against original `sources` entries when `sourcesContent` is present.
 - Conservative source map early stopping by source count, scanned bytes, per-source bytes, and discovery count.
 - Final URL handling after redirects for correct same-origin asset resolution.
@@ -151,5 +152,4 @@ This passes as of this progress note.
 
 High-value next steps:
 
-- Add broader framework-specific source map discovery heuristics beyond adjacent `.map` probing.
 - Expand dynamic browser scanning with richer interaction hooks and configurable wait conditions.
