@@ -83,7 +83,7 @@ type Options struct {
 	ActiveStorageTests   bool
 	GraphQLIntrospection bool
 	GraphQLSchemaOutput  string
-	// Pacing controls for active probes
+	// Pacing controls for remote requests.
 	Delay          time.Duration `json:"delay"`
 	MaxConcurrency int           `json:"max_concurrency"`
 }

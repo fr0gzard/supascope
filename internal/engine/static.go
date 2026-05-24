@@ -44,21 +44,35 @@ var defaultRequestHeaders = map[string]string{
 }
 
 type Static struct {
-	client    *http.Client
-	userAgent string
-	headers   map[string]string
-	debug     bool
-	maxAssets int
+	client         *http.Client
+	userAgent      string
+	headers        map[string]string
+	debug          bool
+	maxAssets      int
+	delay          time.Duration
+	maxConcurrency int
 }
 
-func NewStatic(userAgent string, headers map[string]string, debug bool, maxAssets int) Static {
+type StaticOptions struct {
+	Delay          time.Duration
+	MaxConcurrency int
+}
+
+func NewStatic(userAgent string, headers map[string]string, debug bool, maxAssets int, options ...StaticOptions) Static {
 	if strings.TrimSpace(userAgent) == "" {
 		userAgent = defaultUserAgent
 	}
 	if maxAssets <= 0 {
 		maxAssets = defaultMaxAssets
 	}
-	return Static{client: &http.Client{Timeout: 15 * time.Second}, userAgent: userAgent, headers: headers, debug: debug, maxAssets: maxAssets}
+	staticOptions := StaticOptions{MaxConcurrency: 1}
+	if len(options) > 0 {
+		staticOptions = options[0]
+	}
+	if staticOptions.MaxConcurrency <= 0 {
+		staticOptions.MaxConcurrency = 1
+	}
+	return Static{client: &http.Client{Timeout: 15 * time.Second}, userAgent: userAgent, headers: headers, debug: debug, maxAssets: maxAssets, delay: staticOptions.Delay, maxConcurrency: staticOptions.MaxConcurrency}
 }
 
 func (s Static) ScanURL(ctx context.Context, target string) ([]model.Discovery, error) {
@@ -83,37 +97,85 @@ func (s Static) ScanURL(ctx context.Context, target string) ([]model.Discovery, 
 
 	visited := map[string]bool{}
 	for len(queue) > 0 && len(visited) < s.maxAssets {
-		next := queue[0]
-		queue = queue[1:]
-		if visited[next.url] || next.depth > maxDepth {
+		batch := make([]queuedAsset, 0, s.maxConcurrency)
+		for len(queue) > 0 && len(visited) < s.maxAssets && len(batch) < s.maxConcurrency {
+			next := queue[0]
+			queue = queue[1:]
+			if visited[next.url] || next.depth > maxDepth {
+				continue
+			}
+			visited[next.url] = true
+			batch = append(batch, next)
+		}
+		if len(batch) == 0 {
 			continue
 		}
-		visited[next.url] = true
 
-		fetched, err := s.fetch(ctx, next.url)
-		if err != nil {
-			s.debugf("fetch skipped: url=%s err=%v", next.url, err)
-			continue
-		}
-		discoveries = append(discoveries, wafDiscovery(fetched)...)
-		if fetched.blocked {
-			s.debugf("fetch blocked: url=%s detail=%s", fetched.finalURL, fetched.wafDetail)
-			continue
-		}
-		discoveries = append(discoveries, scanAssetContent(fetched.finalURL, fetched.body)...)
+		for _, result := range s.fetchAssets(ctx, batch) {
+			next := result.asset
+			if result.err != nil {
+				s.debugf("fetch skipped: url=%s err=%v", next.url, result.err)
+				continue
+			}
+			fetched := result.fetched
+			discoveries = append(discoveries, wafDiscovery(fetched)...)
+			if fetched.blocked {
+				s.debugf("fetch blocked: url=%s detail=%s", fetched.finalURL, fetched.wafDetail)
+				continue
+			}
+			discoveries = append(discoveries, scanAssetContent(fetched.finalURL, fetched.body)...)
 
-		if candidate, ok := sourceMapCandidateURL(fetched.finalURL); ok && !visited[candidate] && len(queue)+len(visited) < s.maxAssets {
-			queue = append(queue, queuedAsset{url: candidate, depth: next.depth + 1})
-		}
-		for _, child := range s.discoverAssetURLs(fetched.finalURL, fetched.body) {
-			if !visited[child] && len(queue)+len(visited) < s.maxAssets {
-				queue = append(queue, queuedAsset{url: child, depth: next.depth + 1})
+			if candidate, ok := sourceMapCandidateURL(fetched.finalURL); ok && !visited[candidate] && len(queue)+len(visited) < s.maxAssets {
+				queue = append(queue, queuedAsset{url: candidate, depth: next.depth + 1})
+			}
+			for _, child := range s.discoverAssetURLs(fetched.finalURL, fetched.body) {
+				if !visited[child] && len(queue)+len(visited) < s.maxAssets {
+					queue = append(queue, queuedAsset{url: child, depth: next.depth + 1})
+				}
 			}
 		}
 	}
 	s.debugf("done: visited_assets=%d queued_remaining=%d max_assets=%d discoveries=%d", len(visited), len(queue), s.maxAssets, len(discoveries))
 
 	return discoveries, nil
+}
+
+type assetFetchResult struct {
+	asset   queuedAsset
+	fetched fetchResult
+	err     error
+}
+
+func (s Static) fetchAssets(ctx context.Context, batch []queuedAsset) []assetFetchResult {
+	results := make(chan assetFetchResult, len(batch))
+	launched := 0
+fetchLoop:
+	for i, asset := range batch {
+		select {
+		case <-ctx.Done():
+			break fetchLoop
+		default:
+		}
+		launched++
+		go func(asset queuedAsset) {
+			fetched, err := s.fetch(ctx, asset.url)
+			results <- assetFetchResult{asset: asset, fetched: fetched, err: err}
+		}(asset)
+
+		if s.delay > 0 && i < len(batch)-1 {
+			select {
+			case <-ctx.Done():
+				break fetchLoop
+			case <-time.After(s.delay):
+			}
+		}
+	}
+
+	out := make([]assetFetchResult, 0, launched)
+	for i := 0; i < launched; i++ {
+		out = append(out, <-results)
+	}
+	return out
 }
 
 type fetchResult struct {

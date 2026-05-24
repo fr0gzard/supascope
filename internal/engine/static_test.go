@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestDiscoverAssetURLs(t *testing.T) {
@@ -65,6 +67,37 @@ func TestScanURLUsesConfiguredHeaders(t *testing.T) {
 	}
 	if got != headers["Accept-Language"] {
 		t.Fatalf("Accept-Language = %q, want %q", got, headers["Accept-Language"])
+	}
+}
+
+func TestScanURLLimitsAssetFetchConcurrency(t *testing.T) {
+	var active int32
+	var maxActive int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<script src="/assets/a.js"></script><script src="/assets/b.js"></script><script src="/assets/c.js"></script><script src="/assets/d.js"></script>`))
+		default:
+			current := atomic.AddInt32(&active, 1)
+			for {
+				previous := atomic.LoadInt32(&maxActive)
+				if current <= previous || atomic.CompareAndSwapInt32(&maxActive, previous, current) {
+					break
+				}
+			}
+			time.Sleep(30 * time.Millisecond)
+			atomic.AddInt32(&active, -1)
+			_, _ = w.Write([]byte("console.log('ok');"))
+		}
+	}))
+	defer server.Close()
+
+	_, err := NewStatic("", nil, false, 10, StaticOptions{MaxConcurrency: 2}).ScanURL(context.Background(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&maxActive); got > 2 {
+		t.Fatalf("max concurrent asset fetches = %d, want <= 2", got)
 	}
 }
 

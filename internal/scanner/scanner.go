@@ -31,7 +31,10 @@ func (s Scanner) Scan(ctx context.Context, opts model.Options) (model.Report, er
 		}
 		discoveries = append(discoveries, found...)
 	case model.TargetURL:
-		found, err := engine.NewStatic(opts.UserAgent, opts.Headers, opts.Debug, opts.MaxAssets).ScanURL(ctx, opts.Target.Value)
+		found, err := engine.NewStatic(opts.UserAgent, opts.Headers, opts.Debug, opts.MaxAssets, engine.StaticOptions{
+			Delay:          opts.Delay,
+			MaxConcurrency: opts.MaxConcurrency,
+		}).ScanURL(ctx, opts.Target.Value)
 		if err != nil {
 			return model.Report{}, err
 		}
