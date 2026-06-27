@@ -81,7 +81,8 @@ type Options struct {
 	Dynamic              bool
 	DynamicWait          time.Duration
 	BrowserDebuggerURL   string
-	Interactive          bool
+	Live                 bool
+	IdleTimeout          time.Duration
 	ActiveChecks         bool
 	ActiveStorageTests   bool
 	GraphQLIntrospection bool

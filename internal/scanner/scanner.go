@@ -50,8 +50,9 @@ func (s Scanner) Scan(ctx context.Context, opts model.Options) (model.Report, er
 				UserAgent:          opts.UserAgent,
 				Headers:            opts.Headers,
 				Wait:               opts.DynamicWait,
+				IdleTimeout:        opts.IdleTimeout,
 				BrowserDebuggerURL: opts.BrowserDebuggerURL,
-				Interactive:        opts.Interactive,
+				Live:               opts.Live,
 				Debug:              opts.Debug,
 			})
 			if err != nil {
@@ -598,8 +599,8 @@ func mode(opts model.Options) []string {
 	if opts.Dynamic {
 		mode = append(mode, "dynamic")
 	}
-	if opts.Interactive {
-		mode = append(mode, "interactive")
+	if opts.Live {
+		mode = append(mode, "live")
 	}
 	if opts.ActiveChecks {
 		mode = append(mode, "active_checks")

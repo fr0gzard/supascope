@@ -28,6 +28,31 @@ func TestNetworkObservationsToDiscoveries(t *testing.T) {
 	}
 }
 
+func TestNetworkObservationsToDiscoveriesWebSocket(t *testing.T) {
+	secret := "sb_publishable_abcdefghijklmnopqrstuvwxyz"
+	wsURL := "wss://abcxyz.supabase.co/realtime/v1/websocket?apikey=" + secret
+	discoveries := networkObservationsToDiscoveries([]networkObservation{
+		{Source: "dynamic_network", URL: wsURL, Detail: "websocket created: " + wsURL, Text: wsURL},
+		{Source: "dynamic_network", URL: wsURL, Detail: "websocket handshake request", Text: "apikey: " + secret},
+		{Source: "dynamic_network", URL: wsURL, Detail: "websocket frame received", Text: `{"table":"profiles","type":"SELECT"}`},
+	})
+
+	if !hasDiscovery(discoveries, "supabase_url", "wss://abcxyz.supabase.co") {
+		t.Fatalf("expected supabase_url discovery from websocket URL, got %#v", discoveries)
+	}
+	if !hasDiscovery(discoveries, "endpoint", wsURL) {
+		t.Fatalf("expected endpoint discovery for websocket URL, got %#v", discoveries)
+	}
+	if !hasDiscovery(discoveries, "key", secret) {
+		t.Fatalf("expected key discovery from websocket headers, got %#v", discoveries)
+	}
+	for _, discovery := range discoveries {
+		if discovery.Evidence == nil || discovery.Evidence.Source != "dynamic_network" {
+			t.Fatalf("unexpected evidence: %#v", discovery)
+		}
+	}
+}
+
 func TestScanDynamicCapturesBrowserNetwork(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")

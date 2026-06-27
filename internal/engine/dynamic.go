@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chromedp/cdproto/emulation"
@@ -20,8 +21,9 @@ type DynamicOptions struct {
 	UserAgent          string
 	Headers            map[string]string
 	Wait               time.Duration
+	IdleTimeout        time.Duration
 	BrowserDebuggerURL string
-	Interactive        bool
+	Live               bool
 	Debug              bool
 }
 
@@ -33,12 +35,36 @@ type networkObservation struct {
 }
 
 func ScanDynamic(ctx context.Context, target string, opts DynamicOptions) ([]model.Discovery, error) {
+	if opts.Wait <= 0 {
+		opts.Wait = 2 * time.Second
+	}
+	if opts.IdleTimeout <= 0 {
+		opts.IdleTimeout = 20 * time.Second
+	}
+
+	isAttachMode := strings.TrimSpace(opts.BrowserDebuggerURL) != ""
+	isLiveMode := opts.Live || isAttachMode
+
 	var allocCtx context.Context
 	var cancelAlloc context.CancelFunc
-	if strings.TrimSpace(opts.BrowserDebuggerURL) != "" {
+	if isAttachMode {
 		allocCtx, cancelAlloc = chromedp.NewRemoteAllocator(ctx, opts.BrowserDebuggerURL)
+	} else if opts.Live {
+		if err := CheckLiveBrowserPrereqs(); err != nil {
+			return nil, err
+		}
+		chromePath, _ := FindChromePath()
+		profile, _ := FindChromeProfile()
+		allocOptions := append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromePath),
+			chromedp.Flag("headless", false),
+			chromedp.Flag("user-data-dir", profile),
+		)
+		allocCtx, cancelAlloc = chromedp.NewExecAllocator(ctx, allocOptions...)
 	} else {
-		allocOptions := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.Flag("headless", !opts.Interactive))
+		allocOptions := append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.Flag("headless", true),
+		)
 		allocCtx, cancelAlloc = chromedp.NewExecAllocator(ctx, allocOptions...)
 	}
 	defer cancelAlloc()
@@ -46,43 +72,70 @@ func ScanDynamic(ctx context.Context, target string, opts DynamicOptions) ([]mod
 	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx)
 	defer cancelBrowser()
 
-	if opts.Wait <= 0 {
-		opts.Wait = 2 * time.Second
-	}
 	browserCtx, cancelTimeout := context.WithTimeout(browserCtx, opts.Wait+30*time.Second)
 	defer cancelTimeout()
 
 	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
 	observations := make([]networkObservation, 0)
-	addObservation := func(observation networkObservation) {
-		if strings.TrimSpace(observation.Text) == "" {
+	wsURLs := map[network.RequestID]string{}
+	acceptingBodies := true
+
+	addObservation := func(obs networkObservation) {
+		if strings.TrimSpace(obs.Text) == "" {
 			return
 		}
 		mu.Lock()
-		observations = append(observations, observation)
+		observations = append(observations, obs)
 		mu.Unlock()
 	}
 
+	touchActivity := func() {
+		lastActivity.Store(time.Now().UnixNano())
+	}
+
+	getWSURL := func(requestID network.RequestID) string {
+		mu.Lock()
+		url := wsURLs[requestID]
+		mu.Unlock()
+		return url
+	}
+
 	chromedp.ListenTarget(browserCtx, func(event any) {
-		switch event := event.(type) {
+		switch ev := event.(type) {
 		case *network.EventRequestWillBeSent:
-			if event.Request == nil {
+			if ev.Request == nil {
 				return
 			}
-			detail := strings.TrimSpace(strings.Join([]string{event.Request.Method, event.Request.URL}, " "))
-			addObservation(networkObservation{Source: "dynamic_network", URL: event.Request.URL, Detail: detail, Text: event.Request.URL})
-			addObservation(networkObservation{Source: "dynamic_network", URL: event.Request.URL, Detail: detail, Text: headersText(event.Request.Headers)})
-			addObservation(networkObservation{Source: "dynamic_network", URL: event.Request.URL, Detail: detail, Text: postDataEntriesText(event.Request.PostDataEntries)})
+			touchActivity()
+			detail := strings.TrimSpace(strings.Join([]string{ev.Request.Method, ev.Request.URL}, " "))
+			addObservation(networkObservation{Source: "dynamic_network", URL: ev.Request.URL, Detail: detail, Text: ev.Request.URL})
+			addObservation(networkObservation{Source: "dynamic_network", URL: ev.Request.URL, Detail: detail, Text: headersText(ev.Request.Headers)})
+			addObservation(networkObservation{Source: "dynamic_network", URL: ev.Request.URL, Detail: detail, Text: postDataEntriesText(ev.Request.PostDataEntries)})
+
 		case *network.EventResponseReceived:
-			if event.Response == nil {
+			if ev.Response == nil {
 				return
 			}
-			detail := fmt.Sprintf("response %d %s", event.Response.Status, event.Response.URL)
-			addObservation(networkObservation{Source: "dynamic_network", URL: event.Response.URL, Detail: detail, Text: event.Response.URL})
-			addObservation(networkObservation{Source: "dynamic_network", URL: event.Response.URL, Detail: detail, Text: headersText(event.Response.Headers)})
+			touchActivity()
+			detail := fmt.Sprintf("response %d %s", ev.Response.Status, ev.Response.URL)
+			addObservation(networkObservation{Source: "dynamic_network", URL: ev.Response.URL, Detail: detail, Text: ev.Response.URL})
+			addObservation(networkObservation{Source: "dynamic_network", URL: ev.Response.URL, Detail: detail, Text: headersText(ev.Response.Headers)})
+
 		case *network.EventLoadingFinished:
-			requestID := event.RequestID
+			touchActivity()
+			mu.Lock()
+			if !acceptingBodies {
+				mu.Unlock()
+				return
+			}
+			wg.Add(1)
+			mu.Unlock()
+			requestID := ev.RequestID
 			go func() {
+				defer wg.Done()
 				body, err := network.GetResponseBody(requestID).Do(browserCtx)
 				if err != nil {
 					debugDynamic(opts.Debug, "dynamic response body unavailable: request_id=%s err=%v", requestID, err)
@@ -90,6 +143,43 @@ func ScanDynamic(ctx context.Context, target string, opts DynamicOptions) ([]mod
 				}
 				addObservation(networkObservation{Source: "dynamic_network", Detail: "response body", Text: string(body)})
 			}()
+
+		case *network.EventWebSocketCreated:
+			touchActivity()
+			mu.Lock()
+			wsURLs[ev.RequestID] = ev.URL
+			mu.Unlock()
+			detail := "websocket created: " + ev.URL
+			addObservation(networkObservation{Source: "dynamic_network", URL: ev.URL, Detail: detail, Text: ev.URL})
+
+		case *network.EventWebSocketWillSendHandshakeRequest:
+			touchActivity()
+			wsURL := getWSURL(ev.RequestID)
+			if ev.Request != nil {
+				addObservation(networkObservation{Source: "dynamic_network", URL: wsURL, Detail: "websocket handshake request", Text: headersText(ev.Request.Headers)})
+			}
+
+		case *network.EventWebSocketHandshakeResponseReceived:
+			touchActivity()
+			wsURL := getWSURL(ev.RequestID)
+			if ev.Response != nil {
+				detail := fmt.Sprintf("websocket handshake response: %d %s", ev.Response.Status, ev.Response.StatusText)
+				addObservation(networkObservation{Source: "dynamic_network", URL: wsURL, Detail: detail, Text: headersText(ev.Response.Headers)})
+			}
+
+		case *network.EventWebSocketFrameReceived:
+			touchActivity()
+			wsURL := getWSURL(ev.RequestID)
+			if ev.Response != nil && ev.Response.PayloadData != "" {
+				addObservation(networkObservation{Source: "dynamic_network", URL: wsURL, Detail: "websocket frame received", Text: ev.Response.PayloadData})
+			}
+
+		case *network.EventWebSocketFrameSent:
+			touchActivity()
+			wsURL := getWSURL(ev.RequestID)
+			if ev.Response != nil && ev.Response.PayloadData != "" {
+				addObservation(networkObservation{Source: "dynamic_network", URL: wsURL, Detail: "websocket frame sent", Text: ev.Response.PayloadData})
+			}
 		}
 	})
 
@@ -100,16 +190,75 @@ func ScanDynamic(ctx context.Context, target string, opts DynamicOptions) ([]mod
 	if strings.TrimSpace(opts.UserAgent) != "" {
 		actions = append(actions, emulation.SetUserAgentOverride(opts.UserAgent))
 	}
-	actions = append(actions, chromedp.Navigate(target), chromedp.Sleep(opts.Wait))
+	if !isAttachMode {
+		actions = append(actions, chromedp.Navigate(target))
+	}
 
 	if err := chromedp.Run(browserCtx, actions...); err != nil {
 		return nil, err
 	}
-	time.Sleep(250 * time.Millisecond)
+
+	if isLiveMode {
+		if isAttachMode {
+			fmt.Fprintf(os.Stderr, "Live capture active via attached browser. Use the app, then wait for idle auto-completion (%s).\n", opts.IdleTimeout)
+		} else {
+			fmt.Fprintf(os.Stderr, "Live capture active. Use the app in the browser, then wait for idle auto-completion (%s).\n", opts.IdleTimeout)
+		}
+
+		done := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
+			var lastReport time.Time
+			for {
+				select {
+				case <-ticker.C:
+					idle := time.Since(time.Unix(0, lastActivity.Load()))
+					mu.Lock()
+					count := len(observations)
+					mu.Unlock()
+					if idle >= opts.IdleTimeout {
+						fmt.Fprintf(os.Stderr, "[live] idle for %s, completing capture (%d observations)\n", idle.Round(time.Second), count)
+						close(done)
+						return
+					}
+					if time.Since(lastReport) >= 5*time.Second {
+						fmt.Fprintf(os.Stderr, "[live] captured %d observations, idle for %s\n", count, idle.Round(time.Second))
+						lastReport = time.Now()
+					}
+				case <-browserCtx.Done():
+					close(done)
+					return
+				}
+			}
+		}()
+		<-done
+	} else {
+		if err := chromedp.Run(browserCtx, chromedp.Sleep(opts.Wait)); err != nil {
+			return nil, err
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	mu.Lock()
+	acceptingBodies = false
+	mu.Unlock()
+
+	waitDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+	case <-time.After(5 * time.Second):
+		debugDynamic(opts.Debug, "timed out waiting for pending response bodies")
+	}
 
 	mu.Lock()
 	snapshot := append([]networkObservation(nil), observations...)
 	mu.Unlock()
+
 	return networkObservationsToDiscoveries(snapshot), nil
 }
 

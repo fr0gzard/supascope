@@ -10,12 +10,12 @@ import (
 )
 
 var (
-	supabaseURLPattern     = regexp.MustCompile(`https://[a-z0-9-]+\.supabase\.co\b`)
+	supabaseURLPattern     = regexp.MustCompile(`(?:https|wss)://[a-z0-9-]+\.supabase\.co\b`)
 	publishablePattern     = regexp.MustCompile(`sb_publishable_[A-Za-z0-9._-]+`)
 	secretPattern          = regexp.MustCompile(`sb_secret_[A-Za-z0-9._-]+`)
 	jwtPattern             = regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`)
 	databaseURLPattern     = regexp.MustCompile(`(?i)postgres(?:ql)?://[^\s"'` + "`" + `<>]+`)
-	serviceEndpointPattern = regexp.MustCompile(`https://[a-z0-9-]+\.supabase\.co/(?:rest|auth|storage|realtime|functions|graphql)/v1/[^\s"'` + "`" + `<>)]*`)
+	serviceEndpointPattern = regexp.MustCompile(`(?:https|wss)://[a-z0-9-]+\.supabase\.co/(?:rest|auth|storage|realtime|functions|graphql)/v1/[^\s"'` + "`" + `<>)]*`)
 )
 
 func Artifacts(content string, evidence model.Evidence) []model.Discovery {
