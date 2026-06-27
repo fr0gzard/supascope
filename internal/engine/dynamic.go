@@ -240,6 +240,13 @@ func ScanDynamic(ctx context.Context, target string, opts DynamicOptions) ([]mod
 		time.Sleep(250 * time.Millisecond)
 	}
 
+	if opts.Live {
+		obs := captureBrowserStorage(browserCtx, target)
+		mu.Lock()
+		observations = append(observations, obs...)
+		mu.Unlock()
+	}
+
 	mu.Lock()
 	acceptingBodies = false
 	mu.Unlock()
@@ -260,6 +267,51 @@ func ScanDynamic(ctx context.Context, target string, opts DynamicOptions) ([]mod
 	mu.Unlock()
 
 	return networkObservationsToDiscoveries(snapshot), nil
+}
+
+func captureBrowserStorage(ctx context.Context, pageURL string) []networkObservation {
+        var observations []networkObservation
+        var cookieText, localStorageText string
+
+        if err := chromedp.Run(ctx,
+                chromedp.EvaluateAsDevTools("document.cookie", &cookieText),
+        ); err != nil {
+                debugDynamic(true, "browser storage capture failed: %v", err)
+                return observations
+        }
+        if cookieText != "" {
+                observations = append(observations, networkObservation{
+                        Source: "browser_storage",
+                        URL:    pageURL,
+                        Detail: "document.cookie captured from live browser session",
+                        Text:   cookieText,
+                })
+        }
+
+        if err := chromedp.Run(ctx,
+                chromedp.EvaluateAsDevTools(`
+                        (() => {
+                                const items = [];
+                                for (let i = 0; i < localStorage.length; i++) {
+                                        const key = localStorage.key(i);
+                                        items.push(key + "=" + localStorage.getItem(key));
+                                }
+                                return items.join("; ");
+                        })()
+                `, &localStorageText),
+        ); err != nil {
+                debugDynamic(true, "localStorage capture failed: %v", err)
+        }
+        if localStorageText != "" {
+                observations = append(observations, networkObservation{
+                        Source: "browser_storage",
+                        URL:    pageURL,
+                        Detail: "localStorage captured from live browser session",
+                        Text:   localStorageText,
+                })
+        }
+
+        return observations
 }
 
 func networkObservationsToDiscoveries(observations []networkObservation) []model.Discovery {

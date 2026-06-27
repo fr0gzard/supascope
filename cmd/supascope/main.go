@@ -178,8 +178,16 @@ func renderReport(result model.Report, jsonOut bool) (string, error) {
 func writeOutputReports(result model.Report, markdownOutput string, jsonOutput string) ([]string, error) {
 	var written []string
 	if markdownOutput != "" {
-		if err := os.WriteFile(markdownOutput, []byte(report.Markdown(result)), 0o644); err != nil {
-			return nil, err
+		var content string
+		if strings.HasSuffix(strings.ToLower(markdownOutput), ".html") {
+			if err := report.WriteHTML(result, markdownOutput); err != nil {
+				return nil, err
+			}
+		} else {
+			content = report.Markdown(result)
+			if err := os.WriteFile(markdownOutput, []byte(content), 0o644); err != nil {
+				return nil, err
+			}
 		}
 		written = append(written, markdownOutput)
 	}

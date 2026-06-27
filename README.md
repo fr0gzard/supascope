@@ -13,9 +13,14 @@ Authorized Supabase security reconnaissance scanner. Detects exposed keys, publi
 - **Safe JWT metadata** — decodes role, issuer, expiry, and project ref without signature verification
 - **Secret masking** — all secrets masked by default; `--unsafe-show-secrets` for raw values
 - **Active service probes** — REST, Auth, Storage, Realtime, Edge Functions, GraphQL (read-only)
+- **Auth settings inspection** — reports signup state, OAuth providers, anonymous sign-in
+- **Env leak detection** — probes common config paths (`.env`, `env.js`, `config.js`, etc.)
+- **REST table discovery** — enumerates tables via `/rest/v1/`, tests anonymous read/write access
+- **Storage bucket checks** — lists buckets, checks public access and object listing
+- **Browser storage capture** — extracts cookies and localStorage in live mode for credential leaks
 - **GraphQL introspection** — optional `__schema` query with schema output to file
 - **WAF/CDN detection** — identifies Cloudflare, Akamai, Fastly, Sucuri, Imperva, Vercel blocks
-- **JSON + Markdown reports** — stdout or file output
+- **JSON + Markdown + HTML reports** — stdout or file output; auto-detect `.html` extension
 
 ## Quick Start
 
@@ -35,8 +40,11 @@ go build ./cmd/supascope
 # Scan from a HAR file
 ./supascope scan --har network.har --json
 
-# Scan a known Supabase project with active + deep probes
-./supascope scan --supabase-url https://project.supabase.co --key sb_publishable_xxx --profile deep
+# Scan a public URL with HTML report
+./supascope scan https://example.com --yes -o report.html
+
+# Scan a known Supabase project with all active checks
+./supascope scan --supabase-url https://project.supabase.co --key sb_publishable_xxx --profile deep -o report.html
 ```
 
 ## Scan Modes
@@ -57,7 +65,7 @@ go build ./cmd/supascope
 |------|-------|-------------|
 | `--yes` | `-y` | Confirm authorization for public URL scans |
 | `--json` | `-j` | Print JSON report instead of Markdown |
-| `--output file` | `-o` | Write Markdown report to file |
+| `--output file` | `-o` | Write report to file (`.md` or `.html` auto-detected) |
 | `--output-json file` | `-oj` | Write JSON report to file |
 | `--profile` | | `passive` (default), `active`, or `deep` |
 | `--live` | | Launch Chrome with your profile, idle-based capture |

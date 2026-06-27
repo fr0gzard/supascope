@@ -73,6 +73,10 @@ func (s Scanner) Scan(ctx context.Context, opts model.Options) (model.Report, er
 
 	discoveries = dedupeDiscoveries(discoveries)
 	services := fingerprintServices(discoveries)
+	if opts.Target.Type == model.TargetURL || opts.Target.Type == model.TargetSupabaseProject {
+		envDiscoveries := envLeakChecks(ctx, discoveries, opts)
+		discoveries = dedupeDiscoveries(append(discoveries, envDiscoveries...))
+	}
 	activeServices := emptyServiceMap()
 	if opts.ActiveChecks {
 		activeDiscoveries := []model.Discovery{}
@@ -81,8 +85,12 @@ func (s Scanner) Scan(ctx context.Context, opts model.Options) (model.Report, er
 		services = mergeServiceMaps(services, activeServices)
 	}
 	findings := discoveriesToFindings(discoveries, opts.ShowSecrets)
+	findings = append(findings, envLeakFindings(discoveries)...)
 	if opts.ActiveChecks {
 		findings = append(findings, activeStatusFindings(activeServices)...)
+		findings = append(findings, authSettingsFindings(ctx, discoveries, opts)...)
+		findings = append(findings, restTableAccessFindings(ctx, discoveries, opts)...)
+		findings = append(findings, storageBucketFindings(ctx, discoveries, opts)...)
 	}
 	if opts.GraphQLIntrospection {
 		results := graphqlIntrospectionChecks(ctx, discoveries, opts)
@@ -296,6 +304,88 @@ func restCheckMissing(opts model.Options, status model.ServiceStatus) bool {
 		return status == model.ServiceNotObserved || status == model.ServiceUnknown || status == model.ServiceBlocked
 	}
 	return true
+}
+
+func envLeakChecks(ctx context.Context, discoveries []model.Discovery, opts model.Options) []model.Discovery {
+	key := activeKey(discoveries, opts.Key)
+	var envDiscoveries []model.Discovery
+	for _, projectURL := range supabaseProjectURLs(discoveries, opts.Target) {
+		envDiscoveries = append(envDiscoveries, engine.ProbeEnvLeaks(ctx, projectURL, engine.EnvLeakOptions{
+			UserAgent: opts.UserAgent,
+			Headers:   opts.Headers,
+			Key:       key,
+			Debug:     opts.Debug,
+		})...)
+	}
+	if opts.Target.Type == model.TargetURL && len(envDiscoveries) == 0 {
+		envDiscoveries = append(envDiscoveries, engine.ProbeEnvLeaks(ctx, opts.Target.Value, engine.EnvLeakOptions{
+			UserAgent: opts.UserAgent,
+			Headers:   opts.Headers,
+			Key:       opts.Key,
+			Debug:     opts.Debug,
+		})...)
+	}
+	return envDiscoveries
+}
+
+func envLeakFindings(discoveries []model.Discovery) []model.Finding {
+	return engine.EnvLeakFindings(discoveries)
+}
+
+func authSettingsFindings(ctx context.Context, discoveries []model.Discovery, opts model.Options) []model.Finding {
+	key := activeKey(discoveries, opts.Key)
+	var findings []model.Finding
+	for _, projectURL := range supabaseProjectURLs(discoveries, opts.Target) {
+		settings, err := engine.ProbeAuthSettings(ctx, projectURL, engine.ActiveOptions{
+			UserAgent: opts.UserAgent,
+			Headers:   opts.Headers,
+			Key:       key,
+			Debug:     opts.Debug,
+		})
+		if err != nil {
+			continue
+		}
+		findings = append(findings, engine.AuthSettingsFindings(settings)...)
+	}
+	return findings
+}
+
+func restTableAccessFindings(ctx context.Context, discoveries []model.Discovery, opts model.Options) []model.Finding {
+	key := activeKey(discoveries, opts.Key)
+	var findings []model.Finding
+	for _, projectURL := range supabaseProjectURLs(discoveries, opts.Target) {
+		access, err := engine.ProbeRestTables(ctx, projectURL, engine.RestCheckOptions{
+			UserAgent: opts.UserAgent,
+			Headers:   opts.Headers,
+			Key:       key,
+			Debug:     opts.Debug,
+			Delay:     opts.Delay,
+		})
+		if err != nil {
+			continue
+		}
+		findings = append(findings, engine.RestAccessFindings(access, projectURL)...)
+	}
+	return findings
+}
+
+func storageBucketFindings(ctx context.Context, discoveries []model.Discovery, opts model.Options) []model.Finding {
+	key := activeKey(discoveries, opts.Key)
+	var findings []model.Finding
+	for _, projectURL := range supabaseProjectURLs(discoveries, opts.Target) {
+		buckets, err := engine.ProbeStorageBuckets(ctx, projectURL, engine.StorageCheckOptions{
+			UserAgent: opts.UserAgent,
+			Headers:   opts.Headers,
+			Key:       key,
+			Debug:     opts.Debug,
+			Delay:     opts.Delay,
+		})
+		if err != nil {
+			continue
+		}
+		findings = append(findings, engine.StorageBucketFindings(buckets, projectURL)...)
+	}
+	return findings
 }
 
 func activeServiceChecks(ctx context.Context, discoveries []model.Discovery, opts model.Options) (model.ServiceMap, []model.Discovery) {

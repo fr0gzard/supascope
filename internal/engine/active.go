@@ -32,6 +32,15 @@ type GraphQLIntrospectionResult struct {
 	Response   string
 }
 
+type AuthSettings struct {
+	SignupDisabled          bool
+	ExternalProviders       []string
+	MailerAutoconfirm       bool
+	SMSAutoconfirm          bool
+	ExternalAnonymousUsers  bool
+	ProjectURL              string
+}
+
 func ProbeProjectServices(ctx context.Context, projectURL string, opts ActiveOptions) (model.ServiceMap, []model.Discovery, error) {
 	base, err := url.Parse(projectURL)
 	if err != nil {
@@ -153,6 +162,150 @@ probeLoop:
 		}
 	}
 	return services, discoveries, nil
+}
+
+func ProbeAuthSettings(ctx context.Context, projectURL string, opts ActiveOptions) (*AuthSettings, error) {
+	base, err := url.Parse(projectURL)
+	if err != nil {
+		return nil, err
+	}
+	if base.Scheme == "" || base.Host == "" {
+		return nil, fmt.Errorf("invalid Supabase project URL: %s", projectURL)
+	}
+	base.Path = "/auth/v1/settings"
+	base.RawQuery = ""
+	base.Fragment = ""
+
+	target := base.String()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	applyRequestHeaders(req, opts.UserAgent, opts.Headers)
+	if opts.Key != "" {
+		req.Header.Set("apikey", opts.Key)
+		req.Header.Set("Authorization", "Bearer "+opts.Key)
+	}
+
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		debugActive(opts.Debug, "auth settings fetch failed: url=%s err=%v", target, err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+	debugActive(opts.Debug, "auth settings response: url=%s status=%s", target, resp.Status)
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil {
+		return nil, err
+	}
+	return parseAuthSettings(projectURL, body), nil
+}
+
+func parseAuthSettings(projectURL string, body []byte) *AuthSettings {
+	settings := &AuthSettings{ProjectURL: projectURL}
+	var decoded struct {
+		DisableSignup         *bool              `json:"disable_signup"`
+		External              map[string]bool    `json:"external"`
+		MailerAutoconfirm     bool               `json:"mailer_autoconfirm"`
+		SMSAutoconfirm        bool               `json:"sms_autoconfirm"`
+		ExternalAnonymousUsers *bool             `json:"external_anonymous_users"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return settings
+	}
+	if decoded.DisableSignup != nil {
+		settings.SignupDisabled = *decoded.DisableSignup
+	}
+	settings.MailerAutoconfirm = decoded.MailerAutoconfirm
+	settings.SMSAutoconfirm = decoded.SMSAutoconfirm
+	if decoded.ExternalAnonymousUsers != nil {
+		settings.ExternalAnonymousUsers = *decoded.ExternalAnonymousUsers
+	}
+	for name, enabled := range decoded.External {
+		if enabled {
+			settings.ExternalProviders = append(settings.ExternalProviders, name)
+		}
+	}
+	return settings
+}
+
+func AuthSettingsFindings(settings *AuthSettings) []model.Finding {
+	if settings == nil {
+		return nil
+	}
+	var findings []model.Finding
+	ev := model.Evidence{Source: "active_check", URL: settings.ProjectURL + "/auth/v1/settings"}
+
+	if settings.ExternalAnonymousUsers {
+		findings = append(findings, model.Finding{
+			ID:             "SUPA-AUTH-MED-001",
+			Title:          "Anonymous sign-in is enabled",
+			Severity:       "medium",
+			Category:       "auth_configuration",
+			Evidence:       ev,
+			Impact:         "Anonymous users can create accounts without credentials, which may enable unauthorized access depending on RLS policies.",
+			Recommendation: "Review anonymous user RLS policies and disable anonymous sign-in if not required.",
+			Confidence:     "high",
+		})
+	}
+
+	if !settings.SignupDisabled {
+		findings = append(findings, model.Finding{
+			ID:             "SUPA-AUTH-INFO-001",
+			Title:          "Public signup is enabled",
+			Severity:       "info",
+			Category:       "auth_configuration",
+			Evidence:       ev,
+			Impact:         "Anyone with the project URL and anon key can create accounts.",
+			Recommendation: "Disable signup if user registration is not required, or ensure RLS policies properly scope new users.",
+			Confidence:     "high",
+		})
+	}
+
+	if len(settings.ExternalProviders) > 0 {
+		ev := ev
+		ev.Detail = "enabled OAuth providers: " + joinStrings(settings.ExternalProviders, ", ")
+		findings = append(findings, model.Finding{
+			ID:             "SUPA-AUTH-INFO-002",
+			Title:          "Social/OAuth providers are enabled",
+			Severity:       "info",
+			Category:       "auth_configuration",
+			Evidence:       ev,
+			Impact:         "External authentication providers were detected. This is expected if social login is intended.",
+			Recommendation: "Review OAuth provider configurations and redirect URLs to prevent misuse.",
+			Confidence:     "high",
+		})
+	}
+
+	if !settings.MailerAutoconfirm {
+		findings = append(findings, model.Finding{
+			ID:             "SUPA-AUTH-INFO-003",
+			Title:          "Email auto-confirmation is disabled",
+			Severity:       "info",
+			Category:       "auth_configuration",
+			Evidence:       ev,
+			Impact:         "Users can sign up without verifying their email address.",
+			Recommendation: "Enable email confirmation in the Supabase dashboard if email validation is required for your use case.",
+			Confidence:     "high",
+		})
+	}
+
+	return findings
+}
+
+func joinStrings(values []string, separator string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	if len(values) == 1 {
+		return values[0]
+	}
+	result := values[0]
+	for _, v := range values[1:] {
+		result += separator + v
+	}
+	return result
 }
 
 func ProbeGraphQLIntrospection(ctx context.Context, projectURL string, opts ActiveOptions) (GraphQLIntrospectionResult, error) {

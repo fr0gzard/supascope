@@ -119,3 +119,113 @@ func TestProbeGraphQLIntrospectionDetectsEnabledSchema(t *testing.T) {
 		t.Fatalf("response = %q, want schema JSON", result.Response)
 	}
 }
+
+func TestParseAuthSettingsSignupEnabled(t *testing.T) {
+	settings := parseAuthSettings("https://test.supabase.co", []byte(`{
+		"disable_signup": false,
+		"external": {"google": true, "github": false},
+		"mailer_autoconfirm": false,
+		"sms_autoconfirm": false,
+		"external_anonymous_users": null
+	}`))
+	if settings.SignupDisabled {
+		t.Fatal("expected signup enabled")
+	}
+	if len(settings.ExternalProviders) != 1 || settings.ExternalProviders[0] != "google" {
+		t.Fatalf("ExternalProviders = %#v, want [google]", settings.ExternalProviders)
+	}
+	if settings.MailerAutoconfirm {
+		t.Fatal("expected mailer auto-confirm disabled")
+	}
+	if settings.ExternalAnonymousUsers {
+		t.Fatal("expected anonymous users disabled")
+	}
+}
+
+func TestParseAuthSettingsAnonymousEnabled(t *testing.T) {
+	settings := parseAuthSettings("https://test.supabase.co", []byte(`{
+		"disable_signup": true,
+		"external": {},
+		"mailer_autoconfirm": true,
+		"sms_autoconfirm": true,
+		"external_anonymous_users": true
+	}`))
+	if !settings.SignupDisabled {
+		t.Fatal("expected signup disabled")
+	}
+	if len(settings.ExternalProviders) != 0 {
+		t.Fatalf("ExternalProviders = %#v, want empty", settings.ExternalProviders)
+	}
+	if !settings.MailerAutoconfirm {
+		t.Fatal("expected mailer auto-confirm enabled")
+	}
+	if !settings.ExternalAnonymousUsers {
+		t.Fatal("expected anonymous users enabled")
+	}
+}
+
+func TestAuthSettingsFindingsGeneratesForEnabledFeatures(t *testing.T) {
+	settings := &AuthSettings{
+		ProjectURL:             "https://test.supabase.co",
+		SignupDisabled:         false,
+		ExternalProviders:      []string{"google", "github"},
+		ExternalAnonymousUsers: true,
+	}
+	findings := AuthSettingsFindings(settings)
+	if len(findings) < 3 {
+		t.Fatalf("expected at least 3 findings, got %d", len(findings))
+	}
+	hasSignup := false
+	hasProviders := false
+	hasAnon := false
+	for _, f := range findings {
+		switch f.ID {
+		case "SUPA-AUTH-INFO-001":
+			hasSignup = true
+		case "SUPA-AUTH-INFO-002":
+			hasProviders = true
+		case "SUPA-AUTH-MED-001":
+			hasAnon = true
+		}
+	}
+	if !hasSignup || !hasProviders || !hasAnon {
+		t.Fatalf("missing expected findings: signup=%v providers=%v anon=%v", hasSignup, hasProviders, hasAnon)
+	}
+}
+
+func TestAuthSettingsFindingsEmptyForDisabledFeatures(t *testing.T) {
+	settings := &AuthSettings{
+		ProjectURL:        "https://test.supabase.co",
+		SignupDisabled:    true,
+		MailerAutoconfirm: true,
+	}
+	findings := AuthSettingsFindings(settings)
+	for _, f := range findings {
+		if f.ID == "SUPA-AUTH-INFO-001" || f.ID == "SUPA-AUTH-INFO-003" {
+			t.Fatalf("unexpected finding ID %s for disabled features", f.ID)
+		}
+	}
+}
+
+func TestProbeAuthSettingsReturnsAuthSettings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/auth/v1/settings" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"disable_signup":false,"external":{"google":true},"mailer_autoconfirm":true}`))
+	}))
+	defer server.Close()
+
+	settings, err := ProbeAuthSettings(context.Background(), server.URL, ActiveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.SignupDisabled {
+		t.Fatal("expected signup enabled")
+	}
+	if len(settings.ExternalProviders) != 1 || settings.ExternalProviders[0] != "google" {
+		t.Fatalf("ExternalProviders = %#v", settings.ExternalProviders)
+	}
+}
