@@ -7,4 +7,5 @@ coverage/
 .env.*
 !.env.example
 supabase_*
+schema.txt
 supascope.exe

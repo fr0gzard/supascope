@@ -19,7 +19,7 @@ const defaultBrowserDebuggerURL = "http://127.0.0.1:9222"
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "scan" {
-		fmt.Fprintln(os.Stderr, "usage: supascope scan [target] [--config file] [--profile passive|active|deep] [--path dir] [--har file] [--supabase-url url] [--key key] [--json|-j] [--dynamic|-d] [--wait|-w duration] [--attach-browser|-b] [--yes|-y]")
+		fmt.Fprintln(os.Stderr, "usage: supascope scan [target] [--config file] [--profile passive|active|deep] [--path dir] [--har file] [--supabase-url url] [--key key] [--json|-j] [--dynamic|-d] [--live] [--idle-timeout duration] [--wait|-w duration] [--attach|-b] [--yes|-y]")
 		os.Exit(2)
 	}
 
@@ -52,19 +52,19 @@ func main() {
 	fs.BoolVar(&dynamic, "dynamic", false, "capture browser network traffic with chromedp")
 	fs.BoolVar(&dynamic, "d", false, "capture browser network traffic with chromedp")
 	var dynamicWait time.Duration
-	fs.DurationVar(&dynamicWait, "dynamic-wait", 2*time.Second, "time to observe browser network traffic after page load")
-	fs.DurationVar(&dynamicWait, "wait", 2*time.Second, "alias for --dynamic-wait")
-	fs.DurationVar(&dynamicWait, "w", 2*time.Second, "alias for --dynamic-wait")
+	fs.DurationVar(&dynamicWait, "wait", 2*time.Second, "browser observation window, or max timeout for live captures")
+	fs.DurationVar(&dynamicWait, "w", 2*time.Second, "alias for --wait")
 	var attachBrowser bool
-	fs.BoolVar(&attachBrowser, "attach-browser", false, "attach to Chrome at http://127.0.0.1:9222 and observe browser traffic")
-	fs.BoolVar(&attachBrowser, "b", false, "attach to Chrome at http://127.0.0.1:9222 and observe browser traffic")
-	browserDebuggerURL := fs.String("browser-debugger-url", "", "attach dynamic scan to an existing Chrome DevTools URL, e.g. http://127.0.0.1:9222")
-	interactive := fs.Bool("interactive", false, "run dynamic browser scan with a visible browser")
+	fs.BoolVar(&attachBrowser, "attach", false, "attach to Chrome at http://127.0.0.1:9222 and observe browser traffic")
+	fs.BoolVar(&attachBrowser, "b", false, "alias for --attach")
+	browserDebuggerURL := fs.String("browser-debugger-url", "", "attach dynamic scan to an existing Chrome DevTools URL")
+	live := fs.Bool("live", false, "launch Chrome with your existing profile and capture traffic until idle")
 	activeStorage := fs.Bool("active-storage-tests", false, "enable active storage tests")
 	graphqlIntrospection := fs.Bool("graphql-introspection", false, "enable GraphQL introspection probe")
 	graphqlSchemaOutput := fs.String("graphql-schema-output", "", "write GraphQL introspection response to a text file")
 	delay := fs.Duration("delay", 0, "delay between remote requests (e.g. 500ms)")
 	maxConcurrency := fs.Int("max-concurrency", 4, "maximum concurrent remote requests")
+	idleTimeout := fs.Duration("idle-timeout", 20*time.Second, "idle duration before auto-completing live capture")
 
 	if err := fs.Parse(normalizeScanArgs(os.Args[2:])); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -112,7 +112,8 @@ func main() {
 		DynamicWait:          dynamicWait,
 		AttachBrowser:        attachBrowser,
 		BrowserDebuggerURL:   *browserDebuggerURL,
-		Interactive:          *interactive,
+		Live:                 *live,
+		IdleTimeout:          *idleTimeout,
 		ActiveStorageTests:   *activeStorage,
 		GraphQLIntrospection: *graphqlIntrospection,
 		GraphQLSchemaOutput:  *graphqlSchemaOutput,
@@ -207,11 +208,11 @@ func normalizeScanArgs(args []string) []string {
 		"--header":                true,
 		"--max-assets":            true,
 		"--delay":                 true,
-		"--dynamic-wait":          true,
 		"--wait":                  true,
 		"-w":                      true,
 		"--browser-debugger-url":  true,
 		"--max-concurrency":       true,
+		"--idle-timeout":          true,
 		"--output":                true,
 		"-o":                      true,
 		"--output-json":           true,
@@ -295,7 +296,8 @@ type scanFileConfig struct {
 	DynamicWait          string            `json:"dynamicWait"`
 	AttachBrowser        *bool             `json:"attachBrowser"`
 	BrowserDebuggerURL   string            `json:"browserDebuggerUrl"`
-	Interactive          *bool             `json:"interactive"`
+	Live                 *bool             `json:"live"`
+	IdleTimeout          string            `json:"idleTimeout"`
 	ActiveStorageTests   *bool             `json:"activeStorageTests"`
 	GraphQLIntrospection *bool             `json:"graphqlIntrospection"`
 	GraphQLSchemaOutput  string            `json:"graphqlSchemaOutput"`
@@ -360,8 +362,15 @@ func scanConfigFromFile(fileConfig scanFileConfig) (scanConfig, error) {
 		}
 		config.DynamicWait = dynamicWait
 	}
-	if fileConfig.Interactive != nil {
-		config.Interactive = *fileConfig.Interactive
+	if fileConfig.Live != nil {
+		config.Live = *fileConfig.Live
+	}
+	if fileConfig.IdleTimeout != "" {
+		idleTimeout, err := time.ParseDuration(fileConfig.IdleTimeout)
+		if err != nil {
+			return scanConfig{}, fmt.Errorf("invalid config idleTimeout %q: %w", fileConfig.IdleTimeout, err)
+		}
+		config.IdleTimeout = idleTimeout
 	}
 	if fileConfig.ActiveStorageTests != nil {
 		config.ActiveStorageTests = *fileConfig.ActiveStorageTests
@@ -476,19 +485,23 @@ func mergeCLIConfig(config scanConfig, cli scanConfig, setFlags map[string]bool)
 	if flagSet(setFlags, "dynamic", "d") {
 		config.Dynamic = cli.Dynamic
 	}
-	if flagSet(setFlags, "dynamic-wait", "wait", "w") {
+	if flagSet(setFlags, "wait", "w") {
 		config.DynamicWait = cli.DynamicWait
+		config.DynamicWaitSet = true
 	} else if config.DynamicWait == 0 {
 		config.DynamicWait = cli.DynamicWait
 	}
-	if flagSet(setFlags, "attach-browser", "b") {
+	if flagSet(setFlags, "attach", "b") {
 		config.AttachBrowser = cli.AttachBrowser
 	}
 	if flagSet(setFlags, "browser-debugger-url") {
 		config.BrowserDebuggerURL = cli.BrowserDebuggerURL
 	}
-	if flagSet(setFlags, "interactive") {
-		config.Interactive = cli.Interactive
+	if flagSet(setFlags, "live") {
+		config.Live = cli.Live
+	}
+	if flagSet(setFlags, "idle-timeout") {
+		config.IdleTimeout = cli.IdleTimeout
 	}
 	if flagSet(setFlags, "active-storage-tests") {
 		config.ActiveStorageTests = cli.ActiveStorageTests
@@ -542,9 +555,11 @@ type scanConfig struct {
 	Yes                  bool
 	Dynamic              bool
 	DynamicWait          time.Duration
+	DynamicWaitSet       bool
 	AttachBrowser        bool
 	BrowserDebuggerURL   string
-	Interactive          bool
+	Live                 bool
+	IdleTimeout          time.Duration
 	ActiveChecks         bool
 	ActiveStorageTests   bool
 	GraphQLIntrospection bool
@@ -602,7 +617,8 @@ func scanOptions(config scanConfig) (model.Options, error) {
 		Dynamic:              config.Dynamic,
 		DynamicWait:          config.DynamicWait,
 		BrowserDebuggerURL:   config.BrowserDebuggerURL,
-		Interactive:          config.Interactive,
+		Live:                 config.Live,
+		IdleTimeout:          config.IdleTimeout,
 		ActiveChecks:         config.ActiveChecks,
 		ActiveStorageTests:   config.ActiveStorageTests,
 		GraphQLIntrospection: config.GraphQLIntrospection,
@@ -632,8 +648,16 @@ func applyProfile(config scanConfig) scanConfig {
 	if config.AttachBrowser && config.BrowserDebuggerURL == "" {
 		config.BrowserDebuggerURL = defaultBrowserDebuggerURL
 	}
-	if config.BrowserDebuggerURL != "" || config.Interactive {
+	if config.BrowserDebuggerURL != "" || config.Live {
 		config.Dynamic = true
+	}
+	if config.Live {
+		if !config.DynamicWaitSet {
+			config.DynamicWait = 10 * time.Minute
+		}
+		if config.IdleTimeout == 0 {
+			config.IdleTimeout = 20 * time.Second
+		}
 	}
 	return config
 }
