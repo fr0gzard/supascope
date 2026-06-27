@@ -1,6 +1,6 @@
 # SupaScope Progress
 
-Last updated: 2026-04-29
+Last updated: 2026-06-27
 
 ## Current State
 
@@ -9,9 +9,13 @@ SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implem
 - Local folder scans.
 - Static public URL scans.
 - Dynamic browser network discovery with `chromedp` behind `--dynamic`.
-- Configurable dynamic browser observation windows with `--dynamic-wait` for login-gated flows.
-- Existing Chrome attachment with `--attach-browser` or `--browser-debugger-url` for CAPTCHA/OAuth/SSO/wallet flows that automation cannot complete reliably.
-- Short dynamic scan aliases: `-y`, `-j`, `-d`, `-b`, and `-w`.
+- Live browser sessions with `--live`: auto-launches Chrome with the user's existing profile, preserving logins and cookies. No manual `--remote-debugging-port` needed.
+- Idle-based auto-completion for live captures: scanner auto-finishes after a configurable idle period (default 20s) with no network activity, eliminating the need for manual completion signals.
+- WebSocket traffic capture for Supabase Realtime: captures WebSocket URLs, handshake headers (including apikey), and frame payloads for artifact detection.
+- Chrome path and user profile detection with platform-specific support (Windows, macOS, Linux), overridable via `SUPASCOPE_CHROME_PATH` and `SUPASCOPE_CHROME_PROFILE` environment variables.
+- Configurable dynamic browser observation windows with `--wait` for login-gated flows.
+- Existing Chrome attachment with `--attach` for CAPTCHA/OAuth/SSO/wallet flows that automation cannot complete reliably.
+- Short scan aliases: `-y`, `-j`, `-d`, `-b`, and `-w`.
 - Offline HAR file scans.
 - Recursive same-origin asset discovery, including Next.js `_next/static` chunks.
 - Source map parsing for reachable `.map` files with `sourcesContent` scanning.
@@ -152,4 +156,6 @@ This passes as of this progress note.
 
 High-value next steps:
 
-- Expand dynamic browser scanning with richer interaction hooks and configurable wait conditions.
+- Expand live browser scanning with richer interaction hooks and configurable wait conditions.
+- Add cookie/localStorage/sessionStorage inspection for leaked session tokens during live captures.
+- Improve WebSocket frame parsing to decode Phoenix protocol messages for Supabase Realtime channel and table name extraction.
