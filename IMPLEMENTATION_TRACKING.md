@@ -32,6 +32,7 @@ Last updated: 2026-06-27
 - [x] **REST table discovery** — parses `/rest/v1/` OpenAPI response, extracts table names
 - [x] **Anonymous read/write access checks** — probes each table for read (`GET ?limit=1`) and write (`POST`) access, generates severity-based findings (critical/high)
 - [x] **Storage bucket enumeration** — lists buckets via `/storage/v1/bucket`, checks public access, tests object listing per bucket
+- [x] **RLS isolation testing** — multi-identity access matrix (anon + 2 auth users), cross-user row ID comparison, leak detection (critical), isolation verification (info)
 
 ### Browser Integration
 - [x] **Cookie/localStorage inspection** — captures `document.cookie` and `localStorage` via chromedp in live mode, scans for Supabase artifacts

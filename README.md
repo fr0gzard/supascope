@@ -17,6 +17,7 @@ Authorized Supabase security reconnaissance scanner. Detects exposed keys, publi
 - **Env leak detection** — probes common config paths (`.env`, `env.js`, `config.js`, etc.)
 - **REST table discovery** — enumerates tables via `/rest/v1/`, tests anonymous read/write access
 - **Storage bucket checks** — lists buckets, checks public access and object listing
+- **RLS isolation testing** — multi-identity access matrix (anon + authenticated users), cross-user data leak detection
 - **Browser storage capture** — extracts cookies and localStorage in live mode for credential leaks
 - **GraphQL introspection** — optional `__schema` query with schema output to file
 - **WAF/CDN detection** — identifies Cloudflare, Akamai, Fastly, Sucuri, Imperva, Vercel blocks
@@ -87,6 +88,8 @@ go build ./cmd/supascope
 | `--graphql-schema-output file` | | Write GraphQL response to file |
 | `--active-storage-tests` | | Enable storage bucket listing probe |
 | `--unsafe-show-secrets` | | Print full secrets in reports |
+| `--auth-token jwt` | | Authenticated user JWT for RLS testing (user A) |
+| `--auth-token-2 jwt` | | Second user JWT for cross-user RLS isolation testing |
 | `--debug` | | Print request diagnostics to stderr |
 
 ## Live Browser Sessions

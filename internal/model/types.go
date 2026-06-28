@@ -90,6 +90,8 @@ type Options struct {
 	// Pacing controls for remote requests.
 	Delay          time.Duration `json:"delay"`
 	MaxConcurrency int           `json:"max_concurrency"`
+	// RLS testing: authenticated user tokens for cross-user isolation checks.
+	AuthTokens []string `json:"auth_tokens,omitempty"`
 }
 
 type Report struct {

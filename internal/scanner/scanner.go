@@ -91,6 +91,9 @@ func (s Scanner) Scan(ctx context.Context, opts model.Options) (model.Report, er
 		findings = append(findings, authSettingsFindings(ctx, discoveries, opts)...)
 		findings = append(findings, restTableAccessFindings(ctx, discoveries, opts)...)
 		findings = append(findings, storageBucketFindings(ctx, discoveries, opts)...)
+		if len(opts.AuthTokens) > 0 {
+			findings = append(findings, rlsCheckFindings(ctx, discoveries, opts)...)
+		}
 	}
 	if opts.GraphQLIntrospection {
 		results := graphqlIntrospectionChecks(ctx, discoveries, opts)
@@ -384,6 +387,33 @@ func storageBucketFindings(ctx context.Context, discoveries []model.Discovery, o
 			continue
 		}
 		findings = append(findings, engine.StorageBucketFindings(buckets, projectURL)...)
+	}
+	return findings
+}
+
+func rlsCheckFindings(ctx context.Context, discoveries []model.Discovery, opts model.Options) []model.Finding {
+	key := activeKey(discoveries, opts.Key)
+	var tokens []engine.Identity
+	for i, token := range opts.AuthTokens {
+		tokens = append(tokens, engine.Identity{
+			Name:  fmt.Sprintf("user_%d", i+1),
+			Token: token,
+		})
+	}
+	var findings []model.Finding
+	for _, projectURL := range supabaseProjectURLs(discoveries, opts.Target) {
+		results, err := engine.ProbeRLS(ctx, projectURL, engine.RLSCheckOptions{
+			UserAgent: opts.UserAgent,
+			Headers:   opts.Headers,
+			AnonKey:   key,
+			Tokens:    tokens,
+			Debug:     opts.Debug,
+			Delay:     opts.Delay,
+		})
+		if err != nil {
+			continue
+		}
+		findings = append(findings, engine.RLSFindings(results, projectURL)...)
 	}
 	return findings
 }
@@ -700,6 +730,9 @@ func mode(opts model.Options) []string {
 	}
 	if opts.GraphQLIntrospection {
 		mode = append(mode, "graphql_introspection")
+	}
+	if len(opts.AuthTokens) > 0 {
+		mode = append(mode, "rls_check")
 	}
 	return mode
 }

@@ -45,6 +45,10 @@ func main() {
 	showSecrets := fs.Bool("unsafe-show-secrets", false, "print full discovered secrets in reports")
 	debug := fs.Bool("debug", false, "print remote request diagnostics to stderr")
 	maxAssets := fs.Int("max-assets", 0, "maximum same-origin assets to fetch during URL scans")
+	var authToken string
+	fs.StringVar(&authToken, "auth-token", "", "authenticated user JWT for RLS testing (user A)")
+	var authToken2 string
+	fs.StringVar(&authToken2, "auth-token-2", "", "second authenticated user JWT for cross-user RLS testing (user B)")
 	var yes bool
 	fs.BoolVar(&yes, "yes", false, "confirm authorization notice for public URL scans")
 	fs.BoolVar(&yes, "y", false, "confirm authorization notice for public URL scans")
@@ -120,6 +124,14 @@ func main() {
 		Delay:                *delay,
 		MaxConcurrency:       *maxConcurrency,
 	}, setFlags)
+
+	if authToken != "" {
+		config.AuthTokens = append(config.AuthTokens, authToken)
+	}
+	if authToken2 != "" {
+		config.AuthTokens = append(config.AuthTokens, authToken2)
+	}
+
 	jsonOut = config.JSON
 	output = config.Output
 	outputJSON = config.OutputJSON
@@ -226,6 +238,8 @@ func normalizeScanArgs(args []string) []string {
 		"--output-json":           true,
 		"-oj":                     true,
 		"--graphql-schema-output": true,
+		"--auth-token":            true,
+		"--auth-token-2":          true,
 	}
 
 	var flags []string
@@ -574,6 +588,7 @@ type scanConfig struct {
 	GraphQLSchemaOutput  string
 	Delay                time.Duration
 	MaxConcurrency       int
+	AuthTokens           []string
 }
 
 func scanOptions(config scanConfig) (model.Options, error) {
@@ -633,6 +648,7 @@ func scanOptions(config scanConfig) (model.Options, error) {
 		GraphQLSchemaOutput:  config.GraphQLSchemaOutput,
 		Delay:                config.Delay,
 		MaxConcurrency:       config.MaxConcurrency,
+		AuthTokens:           config.AuthTokens,
 	}, nil
 }
 
