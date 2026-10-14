@@ -359,3 +359,36 @@ func hasCategory(findings []model.Finding, category string) bool {
 	}
 	return false
 }
+
+func TestEnvLeakChecksProbesAppOriginNotAPIHosts(t *testing.T) {
+	var apiHits int
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer apiServer.Close()
+	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.env" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer appServer.Close()
+
+	discoveries := []model.Discovery{
+		{Type: "supabase_url", Value: apiServer.URL, Source: "static"},
+	}
+	got := envLeakChecks(context.Background(), discoveries, model.Options{
+		Target: model.Target{Type: model.TargetURL, Value: appServer.URL},
+	})
+	if apiHits != 0 {
+		t.Fatalf("probed the Supabase API host %d times; env files live on the app origin", apiHits)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 discovery from the app origin, got %d: %#v", len(got), got)
+	}
+	if !strings.HasPrefix(got[0].Value, appServer.URL) {
+		t.Fatalf("discovery from wrong origin: %q", got[0].Value)
+	}
+}

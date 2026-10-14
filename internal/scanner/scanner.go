@@ -311,22 +311,20 @@ func restCheckMissing(opts model.Options, status model.ServiceStatus) bool {
 
 func envLeakChecks(ctx context.Context, discoveries []model.Discovery, opts model.Options) []model.Discovery {
 	key := activeKey(discoveries, opts.Key)
+	envOpts := engine.EnvLeakOptions{
+		UserAgent: opts.UserAgent,
+		Headers:   opts.Headers,
+		Key:       key,
+		Debug:     opts.Debug,
+	}
+	// Env/config files live on the app origin, not on Supabase API hosts, so
+	// probe the target origin directly instead of each discovered project URL.
+	if opts.Target.Type == model.TargetURL {
+		return engine.ProbeEnvLeaks(ctx, opts.Target.Value, envOpts)
+	}
 	var envDiscoveries []model.Discovery
 	for _, projectURL := range supabaseProjectURLs(discoveries, opts.Target) {
-		envDiscoveries = append(envDiscoveries, engine.ProbeEnvLeaks(ctx, projectURL, engine.EnvLeakOptions{
-			UserAgent: opts.UserAgent,
-			Headers:   opts.Headers,
-			Key:       key,
-			Debug:     opts.Debug,
-		})...)
-	}
-	if opts.Target.Type == model.TargetURL && len(envDiscoveries) == 0 {
-		envDiscoveries = append(envDiscoveries, engine.ProbeEnvLeaks(ctx, opts.Target.Value, engine.EnvLeakOptions{
-			UserAgent: opts.UserAgent,
-			Headers:   opts.Headers,
-			Key:       opts.Key,
-			Debug:     opts.Debug,
-		})...)
+		envDiscoveries = append(envDiscoveries, engine.ProbeEnvLeaks(ctx, projectURL, envOpts)...)
 	}
 	return envDiscoveries
 }
