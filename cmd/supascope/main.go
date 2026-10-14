@@ -9,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"supascope/internal/model"
@@ -111,7 +113,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	result, err := scanner.New().Scan(context.Background(), run.opts)
+	result, err := func() (model.Report, error) {
+		// Cancel the scan on Ctrl+C/SIGTERM so deferred cleanup (notably
+		// chromedp's browser shutdown) runs instead of orphaning Chrome.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return scanner.New().Scan(ctx, run.opts)
+	}()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
