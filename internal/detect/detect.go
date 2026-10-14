@@ -16,7 +16,15 @@ var (
 	jwtPattern             = regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`)
 	databaseURLPattern     = regexp.MustCompile(`(?i)postgres(?:ql)?://[^\s"'` + "`" + `<>]+`)
 	serviceEndpointPattern = regexp.MustCompile(`(?:https|wss)://[a-z0-9-]+\.supabase\.co/(?:rest|auth|storage|realtime|functions|graphql)/v1/[^\s"'` + "`" + `<>)]*`)
+	// supabase-js table access: .from('table_name'). The supabase gate below
+	// keeps other libraries' .from( calls out.
+	supabaseTablePattern = regexp.MustCompile(`\.from\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\)`)
+	supabaseHintPattern  = regexp.MustCompile(`(?i)supabase`)
 )
+
+// maxExtractedTables caps table names per content: each one becomes probe
+// traffic in active scans.
+const maxExtractedTables = 64
 
 func Artifacts(content string, evidence model.Evidence) []model.Discovery {
 	var discoveries []model.Discovery
@@ -60,6 +68,32 @@ func Artifacts(content string, evidence model.Evidence) []model.Discovery {
 			Source:      evidence.Source,
 			Evidence:    &ev,
 		})
+	}
+
+	// Table names from supabase-js calls, used as a fallback when the REST
+	// OpenAPI is unavailable. Gated on a supabase mention so other
+	// libraries' .from( calls don't become probe targets.
+	if supabaseHintPattern.MatchString(content) {
+		seen := map[string]bool{}
+		count := 0
+		for _, loc := range supabaseTablePattern.FindAllStringSubmatchIndex(content, -1) {
+			if count >= maxExtractedTables {
+				break
+			}
+			table := content[loc[2]:loc[3]]
+			if seen[table] {
+				continue
+			}
+			seen[table] = true
+			count++
+			ev := withLine(evidence, content, loc[0])
+			discoveries = append(discoveries, model.Discovery{
+				Type:     "supabase_table",
+				Value:    table,
+				Source:   evidence.Source,
+				Evidence: &ev,
+			})
+		}
 	}
 
 	return discoveries
