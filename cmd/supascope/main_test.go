@@ -438,6 +438,15 @@ func TestApplyProfileDefaultsMaxConcurrency(t *testing.T) {
 	}
 }
 
+func TestScanConfigFromFileRejectsInvalidBrowserMode(t *testing.T) {
+	// Regression: a typo'd browserMode used to match nothing and silently
+	// degrade `scan browser` to a static-only scan.
+	_, err := scanConfigFromFile(scanFileConfig{Target: "https://example.com", BrowserMode: "live"}, "browser")
+	if err == nil {
+		t.Fatal("expected error for invalid browserMode")
+	}
+}
+
 func TestScanConfigFromFileBrowserMode(t *testing.T) {
 	config, err := scanConfigFromFile(scanFileConfig{
 		Target:      "https://example.com",

@@ -558,8 +558,13 @@ func scanConfigFromFile(fileConfig scanFileConfig, mode string) (scanConfig, err
 		Output:              fileConfig.Output,
 		OutputJSON:          fileConfig.OutputJSON,
 		GraphQLSchemaOutput: fileConfig.GraphQLSchemaOutput,
-		BrowserMode:         fileConfig.BrowserMode,
 		AttachURL:           fileConfig.AttachURL,
+	}
+	switch fileConfig.BrowserMode {
+	case "", "headless", "headed", "attach":
+		config.BrowserMode = fileConfig.BrowserMode
+	default:
+		return scanConfig{}, fmt.Errorf("invalid config browserMode %q: expected headless, headed, or attach", fileConfig.BrowserMode)
 	}
 	switch mode {
 	case "url", "browser":
