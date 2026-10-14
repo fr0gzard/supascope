@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -500,5 +501,26 @@ func TestScanURLHeaderOverridePriority(t *testing.T) {
 	}
 	if gotLang != "fr-FR" {
 		t.Fatalf("Accept-Language = %q, want %q", gotLang, "fr-FR")
+	}
+}
+
+func TestCrossOriginRedirect(t *testing.T) {
+	if _, ok := crossOriginRedirect("https://a.example/", "https://a.example/home"); ok {
+		t.Fatal("same host should not count as cross-origin")
+	}
+	if _, ok := crossOriginRedirect("http://a.example/", "https://a.example/"); ok {
+		t.Fatal("http->https upgrade on the same host should be allowed")
+	}
+	to, ok := crossOriginRedirect("https://a.example/", "https://b.example/")
+	if !ok || to != "https://b.example/" {
+		t.Fatalf("host change should be flagged, got %q %v", to, ok)
+	}
+}
+
+func TestSameOriginNormalizesDefaultPorts(t *testing.T) {
+	a, _ := url.Parse("https://example.com:443/x.js")
+	b, _ := url.Parse("https://example.com/y.js")
+	if !sameOrigin(a, b) {
+		t.Fatal("explicit :443 should match the default https port")
 	}
 }

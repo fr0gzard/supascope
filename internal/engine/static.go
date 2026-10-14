@@ -81,6 +81,9 @@ func (s Static) ScanURL(ctx context.Context, target string) ([]model.Discovery, 
 	if err != nil {
 		return nil, err
 	}
+	if redirectTo, ok := crossOriginRedirect(target, root.finalURL); ok {
+		return nil, fmt.Errorf("target redirected cross-origin to %s: re-run the scan against that URL (with --yes) if it is in scope", redirectTo)
+	}
 	s.debugf("root: target=%s final=%s bytes=%d", target, root.finalURL, len(root.body))
 
 	var discoveries []model.Discovery
@@ -522,11 +525,51 @@ func sameOriginURL(base string, candidate string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	if resolved.Scheme != baseURL.Scheme || resolved.Host != baseURL.Host {
+	if !sameOrigin(baseURL, resolved) {
 		return "", false
 	}
 	resolved.Fragment = ""
 	return resolved.String(), true
+}
+
+// sameOrigin compares scheme, hostname, and effective port, so
+// https://example.com and https://example.com:443 count as the same origin.
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
+}
+
+// crossOriginRedirect reports whether following redirects landed on a
+// different host than the requested target. Scanning would otherwise
+// silently drift onto a host the user didn't authorize. Scheme upgrades
+// (http -> https) on the same host are allowed.
+func crossOriginRedirect(target, final string) (string, bool) {
+	targetURL, err := url.Parse(target)
+	if err != nil {
+		return "", false
+	}
+	finalURL, err := url.Parse(final)
+	if err != nil {
+		return "", false
+	}
+	if !strings.EqualFold(targetURL.Hostname(), finalURL.Hostname()) {
+		return final, true
+	}
+	return "", false
 }
 
 type queuedAsset struct {
