@@ -839,6 +839,9 @@ func applyProfile(config scanConfig) scanConfig {
 	if config.Profile == "" {
 		config.Profile = "passive"
 	}
+	if config.MaxConcurrency <= 0 {
+		config.MaxConcurrency = 4
+	}
 	switch config.Profile {
 	case "passive":
 		config.ActiveChecks = false

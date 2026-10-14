@@ -418,6 +418,26 @@ func TestScanConfigFromFile(t *testing.T) {
 	}
 }
 
+func TestApplyProfileDefaultsMaxConcurrency(t *testing.T) {
+	// Regression: the CLI refactor moved --max-concurrency to config-file
+	// only, leaving it 0 (coerced to 1 by the engines) instead of 4.
+	opts, err := scanOptions(scanConfig{Mode: "url", Target: "https://example.com", Yes: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.MaxConcurrency != 4 {
+		t.Fatalf("MaxConcurrency = %d, want 4", opts.MaxConcurrency)
+	}
+
+	explicit, err := scanOptions(scanConfig{Mode: "url", Target: "https://example.com", MaxConcurrency: 8, Yes: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.MaxConcurrency != 8 {
+		t.Fatalf("MaxConcurrency = %d, want explicit 8", explicit.MaxConcurrency)
+	}
+}
+
 func TestScanConfigFromFileBrowserMode(t *testing.T) {
 	config, err := scanConfigFromFile(scanFileConfig{
 		Target:      "https://example.com",
