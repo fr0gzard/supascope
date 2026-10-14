@@ -197,11 +197,15 @@ func wafDiscovery(result fetchResult) []model.Discovery {
 
 func scanAssetContent(fetchedURL string, content string) []model.Discovery {
 	evidence := model.Evidence{Source: "static", URL: fetchedURL}
-	discoveries := detect.Artifacts(content, evidence)
 	if !isSourceMapURL(fetchedURL) {
-		return discoveries
+		return detect.Artifacts(content, evidence)
 	}
-	return append(discoveries, scanSourceMap(fetchedURL, content)...)
+	if mapDiscoveries, ok := scanSourceMap(fetchedURL, content); ok {
+		// The map parsed and its sources were scanned individually; scanning
+		// the raw JSON as well would duplicate every finding.
+		return mapDiscoveries
+	}
+	return detect.Artifacts(content, evidence)
 }
 
 type sourceMap struct {
@@ -209,13 +213,14 @@ type sourceMap struct {
 	SourcesContent []string `json:"sourcesContent"`
 }
 
-func scanSourceMap(mapURL string, content string) []model.Discovery {
+func scanSourceMap(mapURL string, content string) ([]model.Discovery, bool) {
 	var parsed sourceMap
 	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
-		return nil
+		return nil, false
 	}
 	var discoveries []model.Discovery
 	scannedBytes := 0
+	scannedAny := false
 	for index, sourceContent := range parsed.SourcesContent {
 		if sourceContent == "" {
 			continue
@@ -227,6 +232,7 @@ func scanSourceMap(mapURL string, content string) []model.Discovery {
 			sourceContent = sourceContent[:maxSourceContentScanBytes]
 		}
 		scannedBytes += len(sourceContent)
+		scannedAny = true
 		sourceName := fmt.Sprintf("sourcesContent[%d]", index)
 		if index < len(parsed.Sources) && strings.TrimSpace(parsed.Sources[index]) != "" {
 			sourceName = parsed.Sources[index]
@@ -234,7 +240,7 @@ func scanSourceMap(mapURL string, content string) []model.Discovery {
 		evidence := model.Evidence{Source: "source_map", URL: mapURL, File: sourceName, Detail: "source map source: " + sourceName}
 		discoveries = append(discoveries, detect.Artifacts(sourceContent, evidence)...)
 	}
-	return discoveries
+	return discoveries, scannedAny
 }
 
 func isSourceMapURL(rawURL string) bool {

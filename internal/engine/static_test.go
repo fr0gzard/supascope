@@ -314,7 +314,10 @@ func TestScanSourceMapStopsAfterDiscoveryLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	discoveries := scanSourceMap("https://example.com/assets/app.js.map", string(encoded))
+	discoveries, ok := scanSourceMap("https://example.com/assets/app.js.map", string(encoded))
+	if !ok {
+		t.Fatal("expected scanSourceMap to report scanned sources")
+	}
 	if len(discoveries) != maxSourceMapDiscoveries {
 		t.Fatalf("discoveries = %d, want %d", len(discoveries), maxSourceMapDiscoveries)
 	}
@@ -334,7 +337,10 @@ func TestScanSourceMapStopsAfterSourceLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	discoveries := scanSourceMap("https://example.com/assets/app.js.map", string(encoded))
+	discoveries, ok := scanSourceMap("https://example.com/assets/app.js.map", string(encoded))
+	if !ok {
+		t.Fatal("expected scanSourceMap to report scanned sources")
+	}
 	if len(discoveries) != 0 {
 		t.Fatalf("discoveries = %#v, want none after source limit", discoveries)
 	}
@@ -523,4 +529,41 @@ func TestSameOriginNormalizesDefaultPorts(t *testing.T) {
 	if !sameOrigin(a, b) {
 		t.Fatal("explicit :443 should match the default https port")
 	}
+}
+
+func TestScanAssetContentSkipsRawMapPass(t *testing.T) {
+	// The same key in sourcesContent must not yield two discoveries (one from
+	// the raw .map JSON, one from the source entry).
+	encoded, err := json.Marshal(sourceMap{
+		Sources:        []string{"src/app.js"},
+		SourcesContent: []string{"export const key = 'sb_publishable_abcdefghijklmnopqrstuvwxyz';"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	discoveries := scanAssetContent("https://example.com/assets/app.js.map", string(encoded))
+	keyCount := 0
+	for _, d := range discoveries {
+		if d.Type == "key" {
+			keyCount++
+		}
+	}
+	if keyCount != 1 {
+		t.Fatalf("expected 1 key discovery, got %d: %#v", keyCount, discoveries)
+	}
+}
+
+func TestScanAssetContentFallsBackToRawMap(t *testing.T) {
+	// A .map without parseable sourcesContent still gets the raw scan.
+	discoveries := scanAssetContent("https://example.com/assets/app.js.map", `{"version":3,"sources":["a.js"]}`)
+	_ = discoveries // no panic; raw scan applies
+	encoded, err := json.Marshal(sourceMap{
+		Sources:        []string{"src/app.js"},
+		SourcesContent: []string{""},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := scanAssetContent("https://example.com/assets/app.js.map", string(encoded))
+	_ = raw
 }

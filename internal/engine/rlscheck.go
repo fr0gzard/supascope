@@ -299,12 +299,12 @@ func RLSFindings(report *RLSReport, projectURL string) []model.Finding {
 			severity = "low"
 		}
 		findings = append(findings, model.Finding{
-			ID:       "SUPA-RLS-WARN-001",
-			Title:    "RLS check coverage gap",
-			Severity: severity,
-			Category: "rls_access",
-			Evidence: model.Evidence{Source: "rls_check", URL: projectURL},
-			Impact:   warning,
+			ID:             "SUPA-RLS-WARN-001",
+			Title:          "RLS check coverage gap",
+			Severity:       severity,
+			Category:       "rls_access",
+			Evidence:       model.Evidence{Source: "rls_check", URL: projectURL},
+			Impact:         warning,
 			Recommendation: "Verify the auth tokens are valid, unexpired, and issued for this project, then re-run the scan.",
 			Confidence:     "high",
 		})

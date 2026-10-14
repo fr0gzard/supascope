@@ -576,13 +576,13 @@ func scanConfigFromFile(fileConfig scanFileConfig, mode string) (scanConfig, err
 	}
 	switch mode {
 	case "url", "browser":
-		config.Target = fileConfig.Target
+		config.Target = strings.TrimSpace(fileConfig.Target)
 	case "folder":
-		config.Target = firstNonEmpty(fileConfig.Target, fileConfig.Path)
+		config.Target = strings.TrimSpace(firstNonEmpty(fileConfig.Target, fileConfig.Path))
 	case "har":
-		config.Target = firstNonEmpty(fileConfig.Target, fileConfig.HAR)
+		config.Target = strings.TrimSpace(firstNonEmpty(fileConfig.Target, fileConfig.HAR))
 	case "project":
-		config.SupabaseURL = fileConfig.SupabaseURL
+		config.SupabaseURL = strings.TrimSpace(fileConfig.SupabaseURL)
 	}
 	if fileConfig.JSON != nil {
 		config.JSON = *fileConfig.JSON
@@ -669,11 +669,11 @@ func flagSet(visited map[string]bool, names ...string) bool {
 // mergeCLIConfig overlays CLI-parsed values on top of the config-file base.
 // Only flags the user actually set override the file.
 func mergeCLIConfig(config scanConfig, cli scanConfig, setFlags map[string]bool) scanConfig {
-	if cli.Target != "" {
-		config.Target = cli.Target
+	if strings.TrimSpace(cli.Target) != "" {
+		config.Target = strings.TrimSpace(cli.Target)
 	}
-	if cli.SupabaseURL != "" {
-		config.SupabaseURL = cli.SupabaseURL
+	if flagSet(setFlags, "supabase-url") {
+		config.SupabaseURL = strings.TrimSpace(cli.SupabaseURL)
 	}
 	if flagSet(setFlags, "profile") {
 		config.Profile = cli.Profile
@@ -707,9 +707,6 @@ func mergeCLIConfig(config scanConfig, cli scanConfig, setFlags map[string]bool)
 	}
 	if len(cli.AuthTokens) > 0 {
 		config.AuthTokens = cli.AuthTokens
-	}
-	if flagSet(setFlags, "supabase-url") {
-		config.SupabaseURL = cli.SupabaseURL
 	}
 	if cli.BrowserModeSet {
 		config.BrowserMode = cli.BrowserMode

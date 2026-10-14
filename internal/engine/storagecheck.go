@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -79,13 +80,18 @@ func ProbeStorageBuckets(ctx context.Context, projectURL string, opts StorageChe
 	return results, nil
 }
 
+// probeBucketMeta checks whether a bucket's objects can be enumerated.
+// It uses the real list endpoint (POST /object/list/{bucket}); the previous
+// GET on /object/public/{bucket}/ could never return 2xx on real Supabase
+// Storage, which made the public_listable finding unreachable.
 func probeBucketMeta(ctx context.Context, projectURL, bucket string, opts StorageCheckOptions) string {
-	url := fmt.Sprintf("%sstorage/v1/object/public/%s/", projectURL, bucket)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	url := fmt.Sprintf("%sstorage/v1/object/list/%s", projectURL, url.PathEscape(bucket))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(`{"prefix":"","limit":1}`))
 	if err != nil {
 		return ""
 	}
 	applyRequestHeaders(req, opts.UserAgent, opts.Headers)
+	req.Header.Set("Content-Type", "application/json")
 	if opts.Key != "" {
 		req.Header.Set("apikey", opts.Key)
 		req.Header.Set("Authorization", "Bearer "+opts.Key)
@@ -100,7 +106,7 @@ func probeBucketMeta(ctx context.Context, projectURL, bucket string, opts Storag
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return "public_listable"
 	}
-	if resp.StatusCode == http.StatusForbidden {
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
 		return "public_forbidden"
 	}
 	if resp.StatusCode == http.StatusNotFound {

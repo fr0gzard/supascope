@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"time"
 
 	"supascope/internal/model"
@@ -33,12 +34,12 @@ type GraphQLIntrospectionResult struct {
 }
 
 type AuthSettings struct {
-	SignupDisabled          bool
-	ExternalProviders       []string
-	MailerAutoconfirm       bool
-	SMSAutoconfirm          bool
-	ExternalAnonymousUsers  bool
-	ProjectURL              string
+	SignupDisabled         bool
+	ExternalProviders      []string
+	MailerAutoconfirm      bool
+	SMSAutoconfirm         bool
+	ExternalAnonymousUsers bool
+	ProjectURL             string
 }
 
 func ProbeProjectServices(ctx context.Context, projectURL string, opts ActiveOptions) (model.ServiceMap, []model.Discovery, error) {
@@ -205,11 +206,11 @@ func ProbeAuthSettings(ctx context.Context, projectURL string, opts ActiveOption
 func parseAuthSettings(projectURL string, body []byte) *AuthSettings {
 	settings := &AuthSettings{ProjectURL: projectURL}
 	var decoded struct {
-		DisableSignup         *bool              `json:"disable_signup"`
-		External              map[string]bool    `json:"external"`
-		MailerAutoconfirm     bool               `json:"mailer_autoconfirm"`
-		SMSAutoconfirm        bool               `json:"sms_autoconfirm"`
-		ExternalAnonymousUsers *bool             `json:"external_anonymous_users"`
+		DisableSignup          *bool           `json:"disable_signup"`
+		External               map[string]bool `json:"external"`
+		MailerAutoconfirm      bool            `json:"mailer_autoconfirm"`
+		SMSAutoconfirm         bool            `json:"sms_autoconfirm"`
+		ExternalAnonymousUsers *bool           `json:"external_anonymous_users"`
 	}
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		return settings
@@ -227,6 +228,7 @@ func parseAuthSettings(projectURL string, body []byte) *AuthSettings {
 			settings.ExternalProviders = append(settings.ExternalProviders, name)
 		}
 	}
+	sort.Strings(settings.ExternalProviders)
 	return settings
 }
 

@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,8 +12,9 @@ import (
 )
 
 var scanExtensions = map[string]bool{
-	".html": true, ".js": true, ".jsx": true, ".ts": true, ".tsx": true,
-	".css": true, ".json": true, ".map": true, ".env": true,
+	".html": true, ".js": true, ".mjs": true, ".cjs": true, ".jsx": true,
+	".ts": true, ".tsx": true, ".css": true, ".json": true, ".map": true,
+	".env": true,
 }
 
 func ScanLocal(root string) ([]model.Discovery, error) {
@@ -31,19 +34,38 @@ func ScanLocal(root string) ([]model.Discovery, error) {
 		if !shouldScan(path) {
 			return nil
 		}
-		content, err := os.ReadFile(path)
+		// Mirror the 8MB static fetch cap: build output can contain huge
+		// bundles that would otherwise OOM the scanner.
+		content, err := readFileCapped(path, 8*1024*1024)
 		if err != nil {
 			return nil
 		}
 		text := string(content)
-		discoveries = append(discoveries, detect.Artifacts(text, model.Evidence{Source: "local", File: path})...)
 		if strings.EqualFold(filepath.Ext(path), ".map") {
-			discoveries = append(discoveries, scanSourceMap(path, text)...)
+			if mapDiscoveries, ok := scanSourceMap(path, text); ok {
+				discoveries = append(discoveries, mapDiscoveries...)
+				return nil
+			}
 		}
+		discoveries = append(discoveries, detect.Artifacts(text, model.Evidence{Source: "local", File: path})...)
 		return nil
 	})
 
 	return discoveries, err
+}
+
+// readFileCapped reads a file up to maxBytes, skipping files that exceed the
+// cap instead of loading them fully into memory.
+func readFileCapped(path string, maxBytes int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err == nil && fi.Size() > maxBytes {
+		return nil, fmt.Errorf("file %s exceeds size cap (%d bytes), skipped", path, maxBytes)
+	}
+	return io.ReadAll(io.LimitReader(f, maxBytes))
 }
 
 func shouldScan(path string) bool {

@@ -35,11 +35,15 @@ func TestProbeStorageBucketsIntegration(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"name":"avatars","public":true,"owner":""},{"name":"docs","public":false,"owner":""}]`))
 			return
 		}
-		if r.URL.Path == "/storage/v1/object/public/avatars/" {
-			w.WriteHeader(http.StatusOK)
+		if r.URL.Path == "/storage/v1/object/list/avatars" {
+			if r.Method != http.MethodPost {
+				t.Errorf("expected POST for list probe, got %s", r.Method)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"name":"file.txt"}]`))
 			return
 		}
-		if r.URL.Path == "/storage/v1/object/public/docs/" {
+		if r.URL.Path == "/storage/v1/object/list/docs" {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
@@ -59,5 +63,36 @@ func TestProbeStorageBucketsIntegration(t *testing.T) {
 	}
 	if buckets[1].Name != "docs" || buckets[1].Info != "public_forbidden" {
 		t.Fatalf("unexpected bucket[1]: %#v", buckets[1])
+	}
+}
+func TestProbeBucketMetaUsesListEndpoint(t *testing.T) {
+	var method, path, contentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path, contentType = r.Method, r.URL.Path, r.Header.Get("Content-Type")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"name":"file.txt"}]`))
+	}))
+	defer server.Close()
+
+	got := probeBucketMeta(context.Background(), server.URL+"/", "avatars", StorageCheckOptions{})
+	if got != "public_listable" {
+		t.Fatalf("probeBucketMeta = %q, want public_listable", got)
+	}
+	if method != http.MethodPost || path != "/storage/v1/object/list/avatars" {
+		t.Fatalf("probe used %s %s, want POST /storage/v1/object/list/avatars", method, path)
+	}
+	if contentType != "application/json" {
+		t.Fatalf("content-type = %q, want application/json", contentType)
+	}
+}
+
+func TestProbeBucketMetaForbidden(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	if got := probeBucketMeta(context.Background(), server.URL+"/", "avatars", StorageCheckOptions{}); got != "public_forbidden" {
+		t.Fatalf("probeBucketMeta = %q, want public_forbidden", got)
 	}
 }

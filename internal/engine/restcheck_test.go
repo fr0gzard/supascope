@@ -10,11 +10,11 @@ import (
 func TestExtractTablesFromOpenAPI(t *testing.T) {
 	openapi := &openAPIDef{
 		Paths: map[string]map[string]interface{}{
-			"/":           map[string]interface{}{},
-			"/rpc/func":   map[string]interface{}{},
-			"/profiles":   map[string]interface{}{},
-			"/products":   map[string]interface{}{},
-			"/orders":     map[string]interface{}{},
+			"/":         map[string]interface{}{},
+			"/rpc/func": map[string]interface{}{},
+			"/profiles": map[string]interface{}{},
+			"/products": map[string]interface{}{},
+			"/orders":   map[string]interface{}{},
 		},
 	}
 	t.Logf("openapi.Paths len=%d, nil=%v", len(openapi.Paths), openapi.Paths == nil)

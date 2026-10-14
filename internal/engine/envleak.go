@@ -31,7 +31,14 @@ var envProbePaths = []string{
 }
 
 func ProbeEnvLeaks(ctx context.Context, baseURL string, opts EnvLeakOptions) []model.Discovery {
-	client := &http.Client{Timeout: 10 * time.Second}
+	// Don't follow redirects: a /.env that 302s to a 200 login page is not
+	// an exposed config file.
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	var discoveries []model.Discovery
 
 	for _, path := range envProbePaths {

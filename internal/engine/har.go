@@ -40,6 +40,10 @@ type harHeader struct {
 }
 
 func ScanHAR(path string) ([]model.Discovery, error) {
+	// HAR exports can be multi-GB; refuse instead of OOMing.
+	if fi, err := os.Stat(path); err == nil && fi.Size() > 512*1024*1024 {
+		return nil, fmt.Errorf("HAR file %q exceeds 512MB, trim it before scanning", path)
+	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
