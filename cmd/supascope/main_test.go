@@ -472,6 +472,26 @@ func TestMergeCLIConfigKeepsFileValuesWhenCLIDefault(t *testing.T) {
 	}
 }
 
+func TestMergeCLIConfigKeepsAuthTokensWithConfigFile(t *testing.T) {
+	base, err := scanConfigFromFile(scanFileConfig{Target: "https://configured.example"}, "url")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli, set, err := parseTargetCommand("url", []string{
+		"https://cli.example", "--auth-token", "TOKEN_A", "--auth-token-2", "TOKEN_B",
+	}, "target URL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Regression: mergeCLIConfig used to drop AuthTokens when a config file
+	// was in play, silently disabling RLS multi-identity testing.
+	got := mergeCLIConfig(base, cli, set)
+	want := []string{"TOKEN_A", "TOKEN_B"}
+	if !reflect.DeepEqual(got.AuthTokens, want) {
+		t.Fatalf("AuthTokens = %#v, want %#v", got.AuthTokens, want)
+	}
+}
+
 func intPtr(v int) *int { return &v }
 
 func TestReadScanConfigFile(t *testing.T) {

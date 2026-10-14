@@ -692,6 +692,9 @@ func mergeCLIConfig(config scanConfig, cli scanConfig, setFlags map[string]bool)
 	if flagSet(setFlags, "yes", "y") {
 		config.Yes = cli.Yes
 	}
+	if len(cli.AuthTokens) > 0 {
+		config.AuthTokens = cli.AuthTokens
+	}
 	if flagSet(setFlags, "supabase-url") {
 		config.SupabaseURL = cli.SupabaseURL
 	}
