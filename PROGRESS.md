@@ -1,8 +1,21 @@
 # SupaScope Progress
 
-Last updated: 2026-06-27
+Last updated: 2026-10-14
 
-## Current State
+## CLI redesign (2026-10-14)
+
+Replaced the 30+ flat flags with subcommands: `scan url|folder|har|project|browser`.
+`--live`/`--dynamic`/`--attach`/`--browser-debugger-url` collapsed into
+`scan browser [--headed|--attach|--attach-url] [--wait]`; `--path`/`--har`/
+`--supabase-url` became positional/subcommand structure; tuning knobs
+(`--delay`, `--max-assets`, `--max-concurrency`, `--idle-timeout`) are now
+config-file only. Also fixed along the way: `--yes` is now required for
+`scan project` and any active/deep scan (not just URL scans); attach/headed
+browser sessions get the 10-minute wait default instead of being killed after
+~32s; config-file `dynamicWait` is honored again; extra positional targets are
+an error instead of silently ignored.
+
+## Current State (2026-06-27)
 
 SupaScope is a Go CLI for authorized Supabase reconnaissance. The current implementation supports:
 

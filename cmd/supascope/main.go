@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -17,132 +19,88 @@ import (
 
 const defaultBrowserDebuggerURL = "http://127.0.0.1:9222"
 
+// errUsage marks errors that should print command usage instead of just the
+// error text.
+var errUsage = errors.New("usage")
+
+const usageText = `SupaScope - authorized Supabase security reconnaissance scanner.
+
+Usage:
+  supascope scan <command> [flags]
+
+Commands:
+  url <target>       scan a public URL (static asset + key discovery)
+  folder <dir>       scan a local folder (build output or source)
+  har <file>         scan a HAR network log file
+  project            probe a known Supabase project (requires --supabase-url)
+  browser <target>   capture live browser traffic (headless by default)
+
+Shared flags (all commands):
+  --config file            load scan settings from a JSON config file
+  --profile name           scan profile: passive (default), active, or deep
+  --yes, -y                confirm authorization for the scan
+  --json, -j               print JSON report instead of Markdown
+  --output, -o file        write Markdown report to file (.html auto-detected)
+  --output-json, -oj file  write JSON report to file
+  --key key                Supabase anon or publishable key
+  --auth-token token       authenticated user JWT for RLS testing (user A)
+  --auth-token-2 token     second authenticated user JWT for cross-user RLS testing (user B)
+  --unsafe-show-secrets    print full discovered secrets in reports
+  --debug                  print remote request diagnostics to stderr
+  --user-agent ua           User-Agent header for remote HTTP requests
+  --header "Name: value"   additional header for remote HTTP requests (repeatable)
+
+Command flags:
+  browser: --headed, --attach, --attach-url url, --wait, -w duration
+  project: --supabase-url url, --active-storage-tests,
+           --graphql-introspection, --graphql-schema-output file
+
+Request tuning (delay, max-assets, max-concurrency, idle-timeout) is configured
+via the JSON config file only. See README.md for config file reference.
+`
+
+const browserUsageText = `Usage:
+  supascope scan browser <target> [flags]
+
+Captures browser network traffic for a public URL. Headless by default.
+
+  --headed            launch Chrome with your existing profile (interactive,
+                      keeps logins); capture ends on idle or --wait timeout
+  --attach            attach to a running Chrome with remote debugging enabled
+  --attach-url url    Chrome DevTools URL to attach to (default ` + defaultBrowserDebuggerURL + `)
+  --wait, -w duration browser observation window (headless), or max capture
+                      timeout for --headed/--attach (default 2s, 10m for
+                      --headed/--attach unless set)
+`
+
+const projectUsageText = `Usage:
+  supascope scan project --supabase-url https://<ref>.supabase.co [flags]
+
+Probes a known Supabase project directly. Requires --yes (active probing).
+
+  --supabase-url url         Supabase project URL to probe (required)
+  --active-storage-tests     enable active storage tests
+  --graphql-introspection    enable GraphQL introspection probe
+  --graphql-schema-output f  write GraphQL introspection response to a text file
+`
+
 func main() {
-	if len(os.Args) < 2 || os.Args[1] != "scan" {
-		fmt.Fprintln(os.Stderr, "usage: supascope scan [target] [--config file] [--profile passive|active|deep] [--path dir] [--har file] [--supabase-url url] [--key key] [--json|-j] [--dynamic|-d] [--live] [--idle-timeout duration] [--wait|-w duration] [--attach|-b] [--yes|-y]")
+	if len(os.Args) < 3 || os.Args[1] != "scan" {
+		fmt.Fprint(os.Stderr, usageText)
 		os.Exit(2)
 	}
-
-	fs := flag.NewFlagSet("scan", flag.ExitOnError)
-	var headers headerFlags
-	var output string
-	var outputJSON string
-	configPath := fs.String("config", "", "load scan settings from JSON config file")
-	profile := fs.String("profile", "passive", "scan profile: passive, active, or deep")
-	path := fs.String("path", "", "local folder to scan")
-	har := fs.String("har", "", "HAR file to scan")
-	supabaseURL := fs.String("supabase-url", "", "known Supabase project URL")
-	key := fs.String("key", "", "Supabase anon or publishable key")
-	userAgent := fs.String("user-agent", "", "User-Agent header for remote HTTP requests")
-	fs.Var(&headers, "header", "additional header for remote HTTP requests, formatted as 'Name: value'")
-	var jsonOut bool
-	fs.BoolVar(&jsonOut, "json", false, "print JSON report")
-	fs.BoolVar(&jsonOut, "j", false, "print JSON report")
-	fs.StringVar(&output, "output", "", "write Markdown report to file")
-	fs.StringVar(&output, "o", "", "write Markdown report to file")
-	fs.StringVar(&outputJSON, "output-json", "", "write JSON report to file")
-	fs.StringVar(&outputJSON, "oj", "", "write JSON report to file")
-	showSecrets := fs.Bool("unsafe-show-secrets", false, "print full discovered secrets in reports")
-	debug := fs.Bool("debug", false, "print remote request diagnostics to stderr")
-	maxAssets := fs.Int("max-assets", 0, "maximum same-origin assets to fetch during URL scans")
-	var authToken string
-	fs.StringVar(&authToken, "auth-token", "", "authenticated user JWT for RLS testing (user A)")
-	var authToken2 string
-	fs.StringVar(&authToken2, "auth-token-2", "", "second authenticated user JWT for cross-user RLS testing (user B)")
-	var yes bool
-	fs.BoolVar(&yes, "yes", false, "confirm authorization notice for public URL scans")
-	fs.BoolVar(&yes, "y", false, "confirm authorization notice for public URL scans")
-	var dynamic bool
-	fs.BoolVar(&dynamic, "dynamic", false, "capture browser network traffic with chromedp")
-	fs.BoolVar(&dynamic, "d", false, "capture browser network traffic with chromedp")
-	var dynamicWait time.Duration
-	fs.DurationVar(&dynamicWait, "wait", 2*time.Second, "browser observation window, or max timeout for live captures")
-	fs.DurationVar(&dynamicWait, "w", 2*time.Second, "alias for --wait")
-	var attachBrowser bool
-	fs.BoolVar(&attachBrowser, "attach", false, "attach to Chrome at http://127.0.0.1:9222 and observe browser traffic")
-	fs.BoolVar(&attachBrowser, "b", false, "alias for --attach")
-	browserDebuggerURL := fs.String("browser-debugger-url", "", "attach dynamic scan to an existing Chrome DevTools URL")
-	live := fs.Bool("live", false, "launch Chrome with your existing profile and capture traffic until idle")
-	activeStorage := fs.Bool("active-storage-tests", false, "enable active storage tests")
-	graphqlIntrospection := fs.Bool("graphql-introspection", false, "enable GraphQL introspection probe")
-	graphqlSchemaOutput := fs.String("graphql-schema-output", "", "write GraphQL introspection response to a text file")
-	delay := fs.Duration("delay", 0, "delay between remote requests (e.g. 500ms)")
-	maxConcurrency := fs.Int("max-concurrency", 4, "maximum concurrent remote requests")
-	idleTimeout := fs.Duration("idle-timeout", 20*time.Second, "idle duration before auto-completing live capture")
-
-	if err := fs.Parse(normalizeScanArgs(os.Args[2:])); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
-	}
-	setFlags := visitedFlags(fs)
-
-	parsedHeaders, err := parseHeaders(headers)
+	run, err := parseCommand(os.Args[2], os.Args[3:])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		if errors.Is(err, errUsage) {
+			fmt.Fprintf(os.Stderr, "error: %s\n\n", strings.TrimPrefix(err.Error(), errUsage.Error()+": "))
+			printCommandUsage(os.Args[2])
+		} else {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		}
 		os.Exit(2)
 	}
 
-	config := scanConfig{}
-	if *configPath != "" {
-		fileConfig, err := readScanConfigFile(*configPath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
-		}
-		config, err = scanConfigFromFile(fileConfig)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
-		}
-	}
-
-	config = mergeCLIConfig(config, scanConfig{
-		Args:                 fs.Args(),
-		Profile:              *profile,
-		Path:                 *path,
-		HAR:                  *har,
-		SupabaseURL:          *supabaseURL,
-		Key:                  *key,
-		UserAgent:            *userAgent,
-		Headers:              parsedHeaders,
-		JSON:                 jsonOut,
-		Output:               output,
-		OutputJSON:           outputJSON,
-		ShowSecrets:          *showSecrets,
-		Debug:                *debug,
-		MaxAssets:            *maxAssets,
-		Yes:                  yes,
-		Dynamic:              dynamic,
-		DynamicWait:          dynamicWait,
-		AttachBrowser:        attachBrowser,
-		BrowserDebuggerURL:   *browserDebuggerURL,
-		Live:                 *live,
-		IdleTimeout:          *idleTimeout,
-		ActiveStorageTests:   *activeStorage,
-		GraphQLIntrospection: *graphqlIntrospection,
-		GraphQLSchemaOutput:  *graphqlSchemaOutput,
-		Delay:                *delay,
-		MaxConcurrency:       *maxConcurrency,
-	}, setFlags)
-
-	if authToken != "" {
-		config.AuthTokens = append(config.AuthTokens, authToken)
-	}
-	if authToken2 != "" {
-		config.AuthTokens = append(config.AuthTokens, authToken2)
-	}
-
-	jsonOut = config.JSON
-	output = config.Output
-	outputJSON = config.OutputJSON
-
-	opts, err := scanOptions(config)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
-	}
-
-	if opts.Target.Type == model.TargetURL && !opts.Yes {
+	if needsAuthorization(run.opts) && !run.opts.Yes {
 		fmt.Println(strings.Join([]string{
 			"SupaScope is intended for authorized security testing only.",
 			"Only scan applications you own or have permission to test.",
@@ -153,17 +111,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	s := scanner.New()
-	result, err := s.Scan(context.Background(), opts)
+	result, err := scanner.New().Scan(context.Background(), run.opts)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 
-	if output != "" || outputJSON != "" {
-		written, err := writeOutputReports(result, output, outputJSON)
+	if run.output != "" || run.outputJSON != "" {
+		written, err := writeOutputReports(result, run.output, run.outputJSON)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
 		for _, path := range written {
@@ -172,12 +129,260 @@ func main() {
 		return
 	}
 
-	rendered, err := renderReport(result, jsonOut)
+	rendered, err := renderReport(result, run.opts.JSON)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 	fmt.Print(rendered)
+}
+
+func printCommandUsage(cmd string) {
+	switch cmd {
+	case "browser":
+		fmt.Fprint(os.Stderr, browserUsageText)
+	case "project":
+		fmt.Fprint(os.Stderr, projectUsageText)
+	default:
+		fmt.Fprint(os.Stderr, usageText)
+	}
+}
+
+// scanRun bundles the scanner options with the output routing derived from
+// the CLI/config, which model.Options does not fully carry.
+type scanRun struct {
+	opts       model.Options
+	output     string
+	outputJSON string
+}
+
+func parseCommand(cmd string, args []string) (scanRun, error) {
+	var cfg scanConfig
+	var set map[string]bool
+	var err error
+	switch cmd {
+	case "url":
+		cfg, set, err = parseTargetCommand(cmd, args, "target URL")
+	case "folder":
+		cfg, set, err = parseTargetCommand(cmd, args, "folder path")
+	case "har":
+		cfg, set, err = parseTargetCommand(cmd, args, "HAR file")
+	case "browser":
+		cfg, set, err = parseBrowserCommand(args)
+	case "project":
+		cfg, set, err = parseProjectCommand(args)
+	default:
+		return scanRun{}, fmt.Errorf("%w: unknown scan command %q", errUsage, cmd)
+	}
+	if err != nil {
+		return scanRun{}, err
+	}
+
+	if cfg.ConfigPath != "" {
+		fileConfig, err := readScanConfigFile(cfg.ConfigPath)
+		if err != nil {
+			return scanRun{}, err
+		}
+		fileCfg, err := scanConfigFromFile(fileConfig, cfg.Mode)
+		if err != nil {
+			return scanRun{}, err
+		}
+		cfg = mergeCLIConfig(fileCfg, cfg, set)
+	}
+
+	opts, err := scanOptions(cfg)
+	if err != nil {
+		return scanRun{}, err
+	}
+	return scanRun{opts: opts, output: cfg.Output, outputJSON: cfg.OutputJSON}, nil
+}
+
+// needsAuthorization reports whether the scan touches remote targets or
+// performs active probing, in which case --yes is required.
+func needsAuthorization(opts model.Options) bool {
+	switch opts.Target.Type {
+	case model.TargetURL, model.TargetSupabaseProject:
+		return true
+	}
+	return opts.ActiveChecks
+}
+
+// sharedValues holds the flags available on every scan subcommand.
+type sharedValues struct {
+	configPath  string
+	profile     string
+	key         string
+	authToken   string
+	authToken2  string
+	userAgent   string
+	headers     headerFlags
+	output      string
+	outputJSON  string
+	jsonOut     bool
+	showSecrets bool
+	debug       bool
+	yes         bool
+}
+
+func registerSharedFlags(fs *flag.FlagSet, v *sharedValues) {
+	fs.StringVar(&v.configPath, "config", "", "load scan settings from JSON config file")
+	fs.StringVar(&v.profile, "profile", "passive", "scan profile: passive, active, or deep")
+	fs.StringVar(&v.key, "key", "", "Supabase anon or publishable key")
+	fs.StringVar(&v.authToken, "auth-token", "", "authenticated user JWT for RLS testing (user A)")
+	fs.StringVar(&v.authToken2, "auth-token-2", "", "second authenticated user JWT for cross-user RLS testing (user B)")
+	fs.StringVar(&v.userAgent, "user-agent", "", "User-Agent header for remote HTTP requests")
+	fs.Var(&v.headers, "header", "additional header for remote HTTP requests, formatted as 'Name: value' (repeatable)")
+	fs.StringVar(&v.output, "output", "", "write Markdown report to file")
+	fs.StringVar(&v.output, "o", "", "write Markdown report to file")
+	fs.StringVar(&v.outputJSON, "output-json", "", "write JSON report to file")
+	fs.StringVar(&v.outputJSON, "oj", "", "write JSON report to file")
+	fs.BoolVar(&v.jsonOut, "json", false, "print JSON report instead of Markdown")
+	fs.BoolVar(&v.jsonOut, "j", false, "print JSON report instead of Markdown")
+	fs.BoolVar(&v.showSecrets, "unsafe-show-secrets", false, "print full discovered secrets in reports")
+	fs.BoolVar(&v.debug, "debug", false, "print remote request diagnostics to stderr")
+	fs.BoolVar(&v.yes, "yes", false, "confirm authorization for the scan")
+	fs.BoolVar(&v.yes, "y", false, "confirm authorization for the scan")
+}
+
+// sharedScanConfig builds the mode-independent part of scanConfig from parsed
+// shared flags.
+func sharedScanConfig(mode string, v *sharedValues) (scanConfig, error) {
+	headers, err := parseHeaders(v.headers)
+	if err != nil {
+		return scanConfig{}, err
+	}
+	cfg := scanConfig{
+		Mode:        mode,
+		ConfigPath:  v.configPath,
+		Profile:     v.profile,
+		Key:         v.key,
+		UserAgent:   v.userAgent,
+		Headers:     headers,
+		JSON:        v.jsonOut,
+		Output:      v.output,
+		OutputJSON:  v.outputJSON,
+		ShowSecrets: v.showSecrets,
+		Debug:       v.debug,
+		Yes:         v.yes,
+	}
+	if v.authToken != "" {
+		cfg.AuthTokens = append(cfg.AuthTokens, v.authToken)
+	}
+	if v.authToken2 != "" {
+		cfg.AuthTokens = append(cfg.AuthTokens, v.authToken2)
+	}
+	return cfg, nil
+}
+
+// parseTargetCommand handles the url, folder, and har subcommands, each of
+// which takes exactly one positional target plus the shared flags.
+func parseTargetCommand(mode string, args []string, what string) (scanConfig, map[string]bool, error) {
+	shared := sharedValues{}
+	fs := flag.NewFlagSet("scan "+mode, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	registerSharedFlags(fs, &shared)
+
+	target, err := parsePositionalTarget(fs, args, what)
+	if err != nil {
+		return scanConfig{}, nil, err
+	}
+	cfg, err := sharedScanConfig(mode, &shared)
+	if err != nil {
+		return scanConfig{}, nil, err
+	}
+	cfg.Target = target
+	return cfg, visitedFlags(fs), nil
+}
+
+// parseBrowserCommand handles `scan browser <target>`: headless dynamic
+// capture by default, --headed for an interactive profile session, --attach
+// for an existing Chrome with remote debugging.
+func parseBrowserCommand(args []string) (scanConfig, map[string]bool, error) {
+	shared := sharedValues{}
+	fs := flag.NewFlagSet("scan browser", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	registerSharedFlags(fs, &shared)
+	headed := fs.Bool("headed", false, "launch Chrome with your existing profile (interactive, keeps logins)")
+	attach := fs.Bool("attach", false, "attach to a running Chrome with remote debugging enabled")
+	attachURL := fs.String("attach-url", "", "Chrome DevTools URL to attach to (default "+defaultBrowserDebuggerURL+")")
+	var wait time.Duration
+	fs.DurationVar(&wait, "wait", 2*time.Second, "browser observation window (headless), or max capture timeout for --headed/--attach")
+	fs.DurationVar(&wait, "w", 2*time.Second, "alias for --wait")
+
+	target, err := parsePositionalTarget(fs, args, "target URL")
+	if err != nil {
+		return scanConfig{}, nil, err
+	}
+	set := visitedFlags(fs)
+
+	if *headed && (*attach || flagSet(set, "attach-url")) {
+		return scanConfig{}, nil, fmt.Errorf("%w: --headed and --attach are mutually exclusive", errUsage)
+	}
+	browserMode := "headless"
+	switch {
+	case *headed:
+		browserMode = "headed"
+	case *attach || flagSet(set, "attach-url"):
+		browserMode = "attach"
+	}
+
+	cfg, err := sharedScanConfig("browser", &shared)
+	if err != nil {
+		return scanConfig{}, nil, err
+	}
+	cfg.Target = target
+	cfg.BrowserMode = browserMode
+	cfg.BrowserModeSet = flagSet(set, "headed", "attach", "attach-url")
+	cfg.AttachURL = *attachURL
+	cfg.DynamicWait = wait
+	if flagSet(set, "wait", "w") {
+		cfg.DynamicWaitSet = true
+	}
+	return cfg, set, nil
+}
+
+// parseProjectCommand handles `scan project --supabase-url ...`.
+func parseProjectCommand(args []string) (scanConfig, map[string]bool, error) {
+	shared := sharedValues{}
+	fs := flag.NewFlagSet("scan project", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	registerSharedFlags(fs, &shared)
+	supabaseURL := fs.String("supabase-url", "", "Supabase project URL to probe (required)")
+	activeStorage := fs.Bool("active-storage-tests", false, "enable active storage tests")
+	graphqlIntrospection := fs.Bool("graphql-introspection", false, "enable GraphQL introspection probe")
+	graphqlSchemaOutput := fs.String("graphql-schema-output", "", "write GraphQL introspection response to a text file")
+
+	if err := fs.Parse(normalizeScanArgs(args)); err != nil {
+		return scanConfig{}, nil, fmt.Errorf("%w: %v", errUsage, err)
+	}
+	if fs.NArg() > 0 {
+		return scanConfig{}, nil, fmt.Errorf("%w: scan project takes no positional arguments, got %q", errUsage, fs.Arg(0))
+	}
+	cfg, err := sharedScanConfig("project", &shared)
+	if err != nil {
+		return scanConfig{}, nil, err
+	}
+	cfg.SupabaseURL = *supabaseURL
+	cfg.ActiveStorageTests = *activeStorage
+	cfg.GraphQLIntrospection = *graphqlIntrospection
+	cfg.GraphQLSchemaOutput = *graphqlSchemaOutput
+	return cfg, visitedFlags(fs), nil
+}
+
+// parsePositionalTarget parses flags and extracts the single positional scan
+// target. Zero positionals are allowed so the target can come from the config
+// file instead; scanOptions rejects an empty target.
+func parsePositionalTarget(fs *flag.FlagSet, args []string, what string) (string, error) {
+	if err := fs.Parse(normalizeScanArgs(args)); err != nil {
+		return "", fmt.Errorf("%w: %v", errUsage, err)
+	}
+	if fs.NArg() > 1 {
+		return "", fmt.Errorf("%w: %s expects at most one %s, got %d", errUsage, fs.Name(), what, fs.NArg())
+	}
+	if fs.NArg() == 0 {
+		return "", nil
+	}
+	return fs.Arg(0), nil
 }
 
 func renderReport(result model.Report, jsonOut bool) (string, error) {
@@ -190,13 +395,12 @@ func renderReport(result model.Report, jsonOut bool) (string, error) {
 func writeOutputReports(result model.Report, markdownOutput string, jsonOutput string) ([]string, error) {
 	var written []string
 	if markdownOutput != "" {
-		var content string
 		if strings.HasSuffix(strings.ToLower(markdownOutput), ".html") {
 			if err := report.WriteHTML(result, markdownOutput); err != nil {
 				return nil, err
 			}
 		} else {
-			content = report.Markdown(result)
+			content := report.Markdown(result)
 			if err := os.WriteFile(markdownOutput, []byte(content), 0o644); err != nil {
 				return nil, err
 			}
@@ -216,30 +420,26 @@ func writeOutputReports(result model.Report, markdownOutput string, jsonOutput s
 	return written, nil
 }
 
+// normalizeScanArgs moves positional arguments after flags so targets can be
+// given before or after flags (e.g. `scan url https://x --yes`).
 func normalizeScanArgs(args []string) []string {
 	valueFlags := map[string]bool{
-		"--profile":               true,
 		"--config":                true,
-		"--path":                  true,
-		"--har":                   true,
-		"--supabase-url":          true,
+		"--profile":               true,
 		"--key":                   true,
+		"--auth-token":            true,
+		"--auth-token-2":          true,
 		"--user-agent":            true,
 		"--header":                true,
-		"--max-assets":            true,
-		"--delay":                 true,
-		"--wait":                  true,
-		"-w":                      true,
-		"--browser-debugger-url":  true,
-		"--max-concurrency":       true,
-		"--idle-timeout":          true,
 		"--output":                true,
 		"-o":                      true,
 		"--output-json":           true,
 		"-oj":                     true,
+		"--wait":                  true,
+		"-w":                      true,
+		"--supabase-url":          true,
+		"--attach-url":            true,
 		"--graphql-schema-output": true,
-		"--auth-token":            true,
-		"--auth-token-2":          true,
 	}
 
 	var flags []string
@@ -298,11 +498,15 @@ func parseHeaders(values []string) (map[string]string, error) {
 	return headers, nil
 }
 
+// scanFileConfig is the JSON config file schema. Tuning knobs that have no
+// CLI flag (delay, max-assets, max-concurrency, idle-timeout) live here.
 type scanFileConfig struct {
 	Target               string            `json:"target"`
-	Path                 string            `json:"path"`
-	HAR                  string            `json:"har"`
+	Path                 string            `json:"path"` // legacy alias for folder target
+	HAR                  string            `json:"har"`  // legacy alias for har target
 	SupabaseURL          string            `json:"supabaseUrl"`
+	BrowserMode          string            `json:"browserMode"` // headless|headed|attach
+	AttachURL            string            `json:"attachUrl"`
 	Key                  string            `json:"key"`
 	Profile              string            `json:"profile"`
 	UserAgent            string            `json:"userAgent"`
@@ -314,11 +518,7 @@ type scanFileConfig struct {
 	Debug                *bool             `json:"debug"`
 	MaxAssets            *int              `json:"maxAssets"`
 	Yes                  *bool             `json:"yes"`
-	Dynamic              *bool             `json:"dynamic"`
 	DynamicWait          string            `json:"dynamicWait"`
-	AttachBrowser        *bool             `json:"attachBrowser"`
-	BrowserDebuggerURL   string            `json:"browserDebuggerUrl"`
-	Live                 *bool             `json:"live"`
 	IdleTimeout          string            `json:"idleTimeout"`
 	ActiveStorageTests   *bool             `json:"activeStorageTests"`
 	GraphQLIntrospection *bool             `json:"graphqlIntrospection"`
@@ -339,22 +539,37 @@ func readScanConfigFile(path string) (scanFileConfig, error) {
 	return config, nil
 }
 
-func scanConfigFromFile(fileConfig scanFileConfig) (scanConfig, error) {
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func scanConfigFromFile(fileConfig scanFileConfig, mode string) (scanConfig, error) {
 	config := scanConfig{
+		Mode:                mode,
 		Profile:             fileConfig.Profile,
-		Path:                fileConfig.Path,
-		HAR:                 fileConfig.HAR,
-		SupabaseURL:         fileConfig.SupabaseURL,
 		Key:                 fileConfig.Key,
 		UserAgent:           fileConfig.UserAgent,
 		Headers:             canonicalHeaders(fileConfig.Headers),
-		BrowserDebuggerURL:  fileConfig.BrowserDebuggerURL,
 		Output:              fileConfig.Output,
 		OutputJSON:          fileConfig.OutputJSON,
 		GraphQLSchemaOutput: fileConfig.GraphQLSchemaOutput,
+		BrowserMode:         fileConfig.BrowserMode,
+		AttachURL:           fileConfig.AttachURL,
 	}
-	if strings.TrimSpace(fileConfig.Target) != "" {
-		config.Args = []string{fileConfig.Target}
+	switch mode {
+	case "url", "browser":
+		config.Target = fileConfig.Target
+	case "folder":
+		config.Target = firstNonEmpty(fileConfig.Target, fileConfig.Path)
+	case "har":
+		config.Target = firstNonEmpty(fileConfig.Target, fileConfig.HAR)
+	case "project":
+		config.SupabaseURL = fileConfig.SupabaseURL
 	}
 	if fileConfig.JSON != nil {
 		config.JSON = *fileConfig.JSON
@@ -371,21 +586,13 @@ func scanConfigFromFile(fileConfig scanFileConfig) (scanConfig, error) {
 	if fileConfig.Yes != nil {
 		config.Yes = *fileConfig.Yes
 	}
-	if fileConfig.Dynamic != nil {
-		config.Dynamic = *fileConfig.Dynamic
-	}
-	if fileConfig.AttachBrowser != nil {
-		config.AttachBrowser = *fileConfig.AttachBrowser
-	}
 	if fileConfig.DynamicWait != "" {
 		dynamicWait, err := time.ParseDuration(fileConfig.DynamicWait)
 		if err != nil {
 			return scanConfig{}, fmt.Errorf("invalid config dynamicWait %q: %w", fileConfig.DynamicWait, err)
 		}
 		config.DynamicWait = dynamicWait
-	}
-	if fileConfig.Live != nil {
-		config.Live = *fileConfig.Live
+		config.DynamicWaitSet = true
 	}
 	if fileConfig.IdleTimeout != "" {
 		idleTimeout, err := time.ParseDuration(fileConfig.IdleTimeout)
@@ -446,33 +653,17 @@ func flagSet(visited map[string]bool, names ...string) bool {
 	return false
 }
 
+// mergeCLIConfig overlays CLI-parsed values on top of the config-file base.
+// Only flags the user actually set override the file.
 func mergeCLIConfig(config scanConfig, cli scanConfig, setFlags map[string]bool) scanConfig {
-	if len(cli.Args) > 0 {
-		config.Args = cli.Args
-		config.Path = ""
-		config.HAR = ""
-		config.SupabaseURL = ""
+	if cli.Target != "" {
+		config.Target = cli.Target
+	}
+	if cli.SupabaseURL != "" {
+		config.SupabaseURL = cli.SupabaseURL
 	}
 	if flagSet(setFlags, "profile") {
 		config.Profile = cli.Profile
-	}
-	if flagSet(setFlags, "path") {
-		config.Path = cli.Path
-		config.Args = nil
-		config.HAR = ""
-		config.SupabaseURL = ""
-	}
-	if flagSet(setFlags, "har") {
-		config.HAR = cli.HAR
-		config.Args = nil
-		config.Path = ""
-		config.SupabaseURL = ""
-	}
-	if flagSet(setFlags, "supabase-url") {
-		config.SupabaseURL = cli.SupabaseURL
-		config.Args = nil
-		config.Path = ""
-		config.HAR = ""
 	}
 	if flagSet(setFlags, "key") {
 		config.Key = cli.Key
@@ -498,32 +689,24 @@ func mergeCLIConfig(config scanConfig, cli scanConfig, setFlags map[string]bool)
 	if flagSet(setFlags, "debug") {
 		config.Debug = cli.Debug
 	}
-	if flagSet(setFlags, "max-assets") {
-		config.MaxAssets = cli.MaxAssets
-	}
 	if flagSet(setFlags, "yes", "y") {
 		config.Yes = cli.Yes
 	}
-	if flagSet(setFlags, "dynamic", "d") {
-		config.Dynamic = cli.Dynamic
+	if flagSet(setFlags, "supabase-url") {
+		config.SupabaseURL = cli.SupabaseURL
+	}
+	if cli.BrowserModeSet {
+		config.BrowserMode = cli.BrowserMode
+		config.BrowserModeSet = true
+	}
+	if flagSet(setFlags, "attach-url") {
+		config.AttachURL = cli.AttachURL
 	}
 	if flagSet(setFlags, "wait", "w") {
 		config.DynamicWait = cli.DynamicWait
 		config.DynamicWaitSet = true
 	} else if config.DynamicWait == 0 {
 		config.DynamicWait = cli.DynamicWait
-	}
-	if flagSet(setFlags, "attach", "b") {
-		config.AttachBrowser = cli.AttachBrowser
-	}
-	if flagSet(setFlags, "browser-debugger-url") {
-		config.BrowserDebuggerURL = cli.BrowserDebuggerURL
-	}
-	if flagSet(setFlags, "live") {
-		config.Live = cli.Live
-	}
-	if flagSet(setFlags, "idle-timeout") {
-		config.IdleTimeout = cli.IdleTimeout
 	}
 	if flagSet(setFlags, "active-storage-tests") {
 		config.ActiveStorageTests = cli.ActiveStorageTests
@@ -533,14 +716,6 @@ func mergeCLIConfig(config scanConfig, cli scanConfig, setFlags map[string]bool)
 	}
 	if flagSet(setFlags, "graphql-schema-output") {
 		config.GraphQLSchemaOutput = cli.GraphQLSchemaOutput
-	}
-	if flagSet(setFlags, "delay") {
-		config.Delay = cli.Delay
-	}
-	if flagSet(setFlags, "max-concurrency") {
-		config.MaxConcurrency = cli.MaxConcurrency
-	} else if config.MaxConcurrency == 0 {
-		config.MaxConcurrency = cli.MaxConcurrency
 	}
 	return config
 }
@@ -559,36 +734,44 @@ func mergeHeaderMaps(base map[string]string, overrides map[string]string) map[st
 	return merged
 }
 
+// scanConfig is the merged CLI + config-file state for one scan invocation.
 type scanConfig struct {
-	Args                 []string
-	Profile              string
-	Path                 string
-	HAR                  string
-	SupabaseURL          string
-	Key                  string
-	UserAgent            string
-	Headers              map[string]string
-	JSON                 bool
-	Output               string
-	OutputJSON           string
-	ShowSecrets          bool
-	Debug                bool
-	MaxAssets            int
-	Yes                  bool
-	Dynamic              bool
-	DynamicWait          time.Duration
-	DynamicWaitSet       bool
-	AttachBrowser        bool
-	BrowserDebuggerURL   string
-	Live                 bool
-	IdleTimeout          time.Duration
+	Mode               string // url|folder|har|project|browser
+	Target             string
+	SupabaseURL        string
+	ConfigPath         string
+	BrowserMode        string // headless|headed|attach (browser mode only)
+	BrowserModeSet     bool
+	AttachURL          string
+	BrowserDebuggerURL string
+	Dynamic            bool
+	Live               bool
+
+	Profile     string
+	Key         string
+	AuthTokens  []string
+	UserAgent   string
+	Headers     map[string]string
+	JSON        bool
+	Output      string
+	OutputJSON  string
+	ShowSecrets bool
+	Debug       bool
+	Yes         bool
+
+	// Request tuning: config file only, except DynamicWait which the browser
+	// subcommand also exposes via --wait.
+	MaxAssets      int
+	Delay          time.Duration
+	MaxConcurrency int
+	DynamicWait    time.Duration
+	DynamicWaitSet bool
+	IdleTimeout    time.Duration
+
 	ActiveChecks         bool
 	ActiveStorageTests   bool
 	GraphQLIntrospection bool
 	GraphQLSchemaOutput  string
-	Delay                time.Duration
-	MaxConcurrency       int
-	AuthTokens           []string
 }
 
 func scanOptions(config scanConfig) (model.Options, error) {
@@ -597,33 +780,30 @@ func scanOptions(config scanConfig) (model.Options, error) {
 		return model.Options{}, fmt.Errorf("invalid --profile %q: expected passive, active, or deep", config.Profile)
 	}
 
-	targets := 0
-	if len(config.Args) > 0 && config.Args[0] != "" {
-		targets++
-	}
-	if config.Path != "" {
-		targets++
-	}
-	if config.HAR != "" {
-		targets++
-	}
-	if config.SupabaseURL != "" {
-		targets++
-	}
-	if targets != 1 {
-		return model.Options{}, fmt.Errorf("provide exactly one scan target: URL, --path, --har, or --supabase-url")
-	}
-
 	var target model.Target
-	switch {
-	case config.Path != "":
-		target = model.Target{Type: model.TargetLocalPath, Value: config.Path}
-	case config.HAR != "":
-		target = model.Target{Type: model.TargetHAR, Value: config.HAR}
-	case config.SupabaseURL != "":
+	switch config.Mode {
+	case "url", "browser":
+		if strings.TrimSpace(config.Target) == "" {
+			return model.Options{}, fmt.Errorf("scan %s requires a target URL", config.Mode)
+		}
+		target = model.Target{Type: model.TargetURL, Value: config.Target}
+	case "folder":
+		if strings.TrimSpace(config.Target) == "" {
+			return model.Options{}, fmt.Errorf("scan folder requires a directory path")
+		}
+		target = model.Target{Type: model.TargetLocalPath, Value: config.Target}
+	case "har":
+		if strings.TrimSpace(config.Target) == "" {
+			return model.Options{}, fmt.Errorf("scan har requires a HAR file path")
+		}
+		target = model.Target{Type: model.TargetHAR, Value: config.Target}
+	case "project":
+		if strings.TrimSpace(config.SupabaseURL) == "" {
+			return model.Options{}, fmt.Errorf("scan project requires --supabase-url")
+		}
 		target = model.Target{Type: model.TargetSupabaseProject, Value: config.SupabaseURL}
 	default:
-		target = model.Target{Type: model.TargetURL, Value: config.Args[0]}
+		return model.Options{}, fmt.Errorf("unknown scan mode %q", config.Mode)
 	}
 
 	return model.Options{
@@ -669,18 +849,28 @@ func applyProfile(config scanConfig) scanConfig {
 	if config.GraphQLSchemaOutput != "" {
 		config.GraphQLIntrospection = true
 	}
-	if config.AttachBrowser && config.BrowserDebuggerURL == "" {
-		config.BrowserDebuggerURL = defaultBrowserDebuggerURL
-	}
-	if config.BrowserDebuggerURL != "" || config.Live {
-		config.Dynamic = true
-	}
-	if config.Live {
-		if !config.DynamicWaitSet {
-			config.DynamicWait = 10 * time.Minute
+	if config.Mode == "browser" {
+		switch config.BrowserMode {
+		case "", "headless":
+			config.BrowserMode = "headless"
+			config.Dynamic = true
+		case "headed":
+			config.Dynamic = true
+			config.Live = true
+		case "attach":
+			config.Dynamic = true
+			if config.AttachURL == "" {
+				config.AttachURL = defaultBrowserDebuggerURL
+			}
+			config.BrowserDebuggerURL = config.AttachURL
 		}
-		if config.IdleTimeout == 0 {
-			config.IdleTimeout = 20 * time.Second
+		if config.BrowserMode != "headless" {
+			if !config.DynamicWaitSet {
+				config.DynamicWait = 10 * time.Minute
+			}
+			if config.IdleTimeout == 0 {
+				config.IdleTimeout = 20 * time.Second
+			}
 		}
 	}
 	return config

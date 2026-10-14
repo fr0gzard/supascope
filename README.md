@@ -30,74 +30,83 @@ Authorized Supabase security reconnaissance scanner. Detects exposed keys, publi
 go build ./cmd/supascope
 
 # Scan a public URL
-./supascope scan https://example.com --yes
+./supascope scan url https://example.com --yes
 
 # Scan a local folder
-./supascope scan --path ./dist --json
+./supascope scan folder ./dist --json
 
 # Scan a login-gated app (launches Chrome with your logins)
-./supascope scan https://example.com --yes --live
+./supascope scan browser https://example.com --yes --headed
 
 # Scan from a HAR file
-./supascope scan --har network.har --json
+./supascope scan har network.har --json
 
 # Scan a public URL with HTML report
-./supascope scan https://example.com --yes -o report.html
+./supascope scan url https://example.com --yes -o report.html
 
 # Scan a known Supabase project with all active checks
-./supascope scan --supabase-url https://project.supabase.co --key sb_publishable_xxx --profile deep -o report.html
+./supascope scan project --supabase-url https://project.supabase.co --key sb_publishable_xxx --profile deep --yes -o report.html
 ```
 
 ## Scan Modes
 
 | Mode | Command | Use Case |
 |------|---------|----------|
-| Static URL | `scan https://example.com --yes` | Public pages, frontend asset scanning |
-| Local folder | `scan --path ./dist` | Build output, source code |
-| HAR import | `scan --har network.har` | Offline browser network log analysis |
-| Live browser | `scan https://example.com --yes --live` | Login-gated apps (uses your Chrome profile) |
-| Headless dynamic | `scan https://example.com --yes -d` | Public pages with runtime traffic |
-| Attach browser | `scan https://example.com --yes --attach` | Advanced: attach to Chrome with debugging port |
-| Supabase project | `scan --supabase-url URL --key KEY` | Direct project probing |
+| Static URL | `scan url <target> --yes` | Public pages, frontend asset scanning |
+| Local folder | `scan folder ./dist` | Build output, source code |
+| HAR import | `scan har network.har` | Offline browser network log analysis |
+| Headless browser | `scan browser <target> --yes` | Public pages with runtime traffic |
+| Headed browser | `scan browser <target> --yes --headed` | Login-gated apps (uses your Chrome profile) |
+| Attach browser | `scan browser <target> --yes --attach` | Attach to Chrome with remote debugging |
+| Supabase project | `scan project --supabase-url URL --key KEY --yes` | Direct project probing |
 
 ## Flags
 
+Shared flags (every subcommand):
+
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--yes` | `-y` | Confirm authorization for public URL scans |
+| `--config file` | | Load settings from JSON config file |
+| `--profile` | | `passive` (default), `active`, or `deep` |
+| `--yes` | `-y` | Confirm authorization (required for remote/active scans) |
 | `--json` | `-j` | Print JSON report instead of Markdown |
 | `--output file` | `-o` | Write report to file (`.md` or `.html` auto-detected) |
 | `--output-json file` | `-oj` | Write JSON report to file |
-| `--profile` | | `passive` (default), `active`, or `deep` |
-| `--live` | | Launch Chrome with your profile, idle-based capture |
-| `--dynamic` | `-d` | Headless dynamic browser scan |
-| `--attach` | `-b` | Attach to Chrome at `http://127.0.0.1:9222` |
-| `--wait duration` | `-w` | Browser observation window / max timeout for live |
-| `--idle-timeout` | | Idle auto-completion for live captures (default 20s) |
-| `--path dir` | | Local folder to scan |
-| `--har file` | | HAR file to scan |
-| `--supabase-url url` | | Known Supabase project URL |
 | `--key key` | | Supabase anon or publishable key |
-| `--config file` | | Load settings from JSON config file |
-| `--user-agent` | | Override User-Agent for remote requests |
-| `--header "Name: value"` | | Add a request header (repeatable) |
-| `--max-assets n` | | Limit recursive asset fetching (default 50) |
-| `--delay duration` | | Delay between remote requests |
-| `--max-concurrency n` | | Max concurrent requests (default 4) |
-| `--graphql-introspection` | | Enable GraphQL `__schema` introspection |
-| `--graphql-schema-output file` | | Write GraphQL response to file |
-| `--active-storage-tests` | | Enable storage bucket listing probe |
-| `--unsafe-show-secrets` | | Print full secrets in reports |
 | `--auth-token jwt` | | Authenticated user JWT for RLS testing (user A) |
 | `--auth-token-2 jwt` | | Second user JWT for cross-user RLS isolation testing |
+| `--unsafe-show-secrets` | | Print full secrets in reports |
 | `--debug` | | Print request diagnostics to stderr |
+| `--user-agent` | | Override User-Agent for remote requests |
+| `--header "Name: value"` | | Add a request header (repeatable) |
 
-## Live Browser Sessions
+`scan browser` flags:
 
-For login-gated apps, `--live` is the recommended approach. SupaScope auto-launches Chrome with your existing user profile — no manual `--remote-debugging-port` needed.
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--headed` | | Launch Chrome with your profile, idle-based capture |
+| `--attach` | | Attach to Chrome at `http://127.0.0.1:9222` |
+| `--attach-url url` | | Chrome DevTools URL to attach to |
+| `--wait duration` | `-w` | Browser observation window / max timeout for headed/attach |
+
+`scan project` flags:
+
+| Flag | Description |
+|------|-------------|
+| `--supabase-url url` | Known Supabase project URL (required) |
+| `--active-storage-tests` | Enable storage bucket listing probe |
+| `--graphql-introspection` | Enable GraphQL `__schema` introspection |
+| `--graphql-schema-output file` | Write GraphQL response to file |
+
+Request tuning (`delay`, `max-assets`, `max-concurrency`, `idle-timeout`) is
+configured via the JSON config file only.
+
+## Browser Sessions
+
+For login-gated apps, `scan browser --headed` is the recommended approach. SupaScope auto-launches Chrome with your existing user profile — no manual `--remote-debugging-port` needed.
 
 ```bash
-./supascope scan https://example.com --yes --live
+./supascope scan browser https://example.com --yes --headed
 ```
 
 1. SupaScope detects your Chrome installation and user profile
@@ -113,12 +122,15 @@ Override Chrome detection with environment variables:
 
 ## Config File
 
+The subcommand is always given on the CLI; the config file supplies values
+for it (target, profile, headers, tuning, browser mode, ...).
+
 ```json
 {
   "target": "https://example.com",
   "profile": "active",
   "yes": true,
-  "live": true,
+  "browserMode": "headed",
   "idleTimeout": "20s",
   "maxAssets": 70,
   "headers": { "Accept-Language": "en-US,en;q=0.9" },
@@ -129,12 +141,13 @@ Override Chrome detection with environment variables:
 }
 ```
 
-CLI flags override config file values. Supported target fields: `target`, `path`, `har`, `supabaseUrl`.
+CLI flags override config file values. Supported target fields: `target`
+(plus legacy `path`/`har` aliases), and `supabaseUrl` for `scan project`.
 
 ## Safety
 
 - SupaScope is for **authorized testing only**. Only scan apps you own or have permission to test.
-- Public URL scans display an authorization notice unless `--yes` is passed.
+- Remote scans (`url`, `browser`, `project`) and any active/deep profile scan display an authorization notice unless `--yes` is passed.
 - All secrets are masked by default. Use `--unsafe-show-secrets` only in trusted environments.
 - Active checks require explicit `--profile active` or `--profile deep`.
 - The scanner does not exploit vulnerabilities, dump database records, brute-force endpoints, or bypass authentication.
