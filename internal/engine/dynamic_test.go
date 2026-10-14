@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/chromedp/cdproto/network"
 )
 
 func TestNetworkObservationsToDiscoveries(t *testing.T) {
@@ -75,4 +77,32 @@ func TestScanDynamicCapturesBrowserNetwork(t *testing.T) {
 func chromeUnavailable(err error) bool {
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "executable file not found") || strings.Contains(message, "could not find") || strings.Contains(message, "chrome") && strings.Contains(message, "not found")
+}
+
+func TestNetworkCaptureHandlesRequestEvent(t *testing.T) {
+	cap := newNetworkCapture(false)
+	ev := &network.EventRequestWillBeSent{
+		RequestID: "1",
+		Request: &network.Request{
+			URL:    "https://abcxyz.supabase.co/rest/v1/profiles?select=id",
+			Method: "GET",
+		},
+	}
+	cap.handle(context.Background(), ev)
+
+	if got := cap.observationCount(); got == 0 {
+		t.Fatal("expected observations from synthetic request event")
+	}
+	discoveries := networkObservationsToDiscoveries(cap.snapshot())
+	if !hasDiscovery(discoveries, "endpoint", "https://abcxyz.supabase.co/rest/v1/profiles?select=id") {
+		t.Fatalf("expected endpoint discovery, got %#v", discoveries)
+	}
+}
+
+func TestNetworkCaptureDropsEmptyText(t *testing.T) {
+	cap := newNetworkCapture(false)
+	cap.addObservation(networkObservation{Source: "dynamic_network", Text: "   "})
+	if got := cap.observationCount(); got != 0 {
+		t.Fatalf("expected empty-text observation to be dropped, got %d", got)
+	}
 }
