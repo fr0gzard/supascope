@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -41,31 +42,59 @@ type CrossUserResult struct {
 	Isolated bool
 }
 
-func ProbeRLS(ctx context.Context, projectURL string, opts RLSCheckOptions) ([]RLSTableResult, error) {
+// RLSReport bundles per-table RLS results with identity-level warnings
+// (rejected or duplicate tokens) that don't belong to any single table.
+type RLSReport struct {
+	Results  []RLSTableResult
+	Warnings []string
+}
+
+func ProbeRLS(ctx context.Context, projectURL string, opts RLSCheckOptions) (*RLSReport, error) {
 	if !strings.HasSuffix(projectURL, "/") {
 		projectURL += "/"
 	}
 
 	allIdentities := append([]Identity{{Name: "anon", Token: opts.AnonKey}}, opts.Tokens...)
 
-	openapi, err := fetchOpenAPIForRLS(ctx, projectURL, opts, allIdentities)
-	if err != nil {
-		return nil, fmt.Errorf("could not fetch REST OpenAPI with any identity: %w", err)
+	tables, rejected, anyOK := fetchTablesForRLS(ctx, projectURL, opts, allIdentities)
+	if !anyOK {
+		return nil, fmt.Errorf("could not fetch REST OpenAPI with any identity")
 	}
 
-	tables := extractTables(openapi)
-	if len(tables) == 0 {
-		return nil, nil
+	report := &RLSReport{}
+	rejectedSet := make(map[string]bool, len(rejected))
+	for _, id := range rejected {
+		rejectedSet[id.Name] = true
+		report.Warnings = append(report.Warnings,
+			fmt.Sprintf("identity %q was rejected by the project (HTTP 401/403): token may be expired, malformed, or issued for a different project; its RLS checks were skipped", id.Name))
+	}
+
+	// Only probe with identities the project actually accepted.
+	var probeIdentities []Identity
+	for _, id := range allIdentities {
+		if !rejectedSet[id.Name] {
+			probeIdentities = append(probeIdentities, id)
+		}
+	}
+	var crossTokens []Identity
+	for _, t := range opts.Tokens {
+		if !rejectedSet[t.Name] {
+			crossTokens = append(crossTokens, t)
+		}
+	}
+	crossUserSkipped := ""
+	if len(crossTokens) >= 2 && crossTokens[0].Token == crossTokens[1].Token {
+		crossUserSkipped = "cross-user RLS check skipped: the two auth tokens are identical"
+		report.Warnings = append(report.Warnings, crossUserSkipped)
 	}
 
 	if opts.Delay <= 0 {
 		opts.Delay = 200 * time.Millisecond
 	}
 
-	var results []RLSTableResult
 	for i, table := range tables {
 		if err := ctx.Err(); err != nil {
-			return results, err
+			return report, err
 		}
 
 		result := RLSTableResult{
@@ -73,7 +102,7 @@ func ProbeRLS(ctx context.Context, projectURL string, opts RLSCheckOptions) ([]R
 			Access: make(map[string]TableAccess),
 		}
 
-		for _, identity := range allIdentities {
+		for _, identity := range probeIdentities {
 			ta := TableAccess{Table: table}
 			ta.Readable = probeReadAccessRLS(ctx, projectURL, table, identity, opts)
 			ta.Writable = probeWriteAccessRLS(ctx, projectURL, table, identity, opts)
@@ -81,55 +110,79 @@ func ProbeRLS(ctx context.Context, projectURL string, opts RLSCheckOptions) ([]R
 			debugRLS(opts.Debug, "table=%s identity=%s readable=%v writable=%v", table, identity.Name, ta.Readable, ta.Writable)
 		}
 
-		if len(opts.Tokens) >= 2 {
-			result.CrossUser = probeCrossUserIsolation(ctx, projectURL, table, opts.Tokens[0], opts.Tokens[1], opts)
+		if len(crossTokens) >= 2 && crossUserSkipped == "" {
+			result.CrossUser = probeCrossUserIsolation(ctx, projectURL, table, crossTokens[0], crossTokens[1], opts)
 		}
 
-		results = append(results, result)
+		report.Results = append(report.Results, result)
 
 		if opts.Delay > 0 && i < len(tables)-1 {
 			select {
 			case <-ctx.Done():
-				return results, ctx.Err()
+				return report, ctx.Err()
 			case <-time.After(opts.Delay):
 			}
 		}
 	}
-	return results, nil
+	return report, nil
 }
 
-func fetchOpenAPIForRLS(ctx context.Context, baseURL string, opts RLSCheckOptions, identities []Identity) (*openAPIDef, error) {
-	openapiURL := baseURL + "rest/v1/"
+// fetchTablesForRLS returns the union of tables visible to any identity, plus
+// the identities whose token was refused (HTTP 401/403). PostgREST scopes its
+// OpenAPI per role, so authenticated-only tables are invisible to anon;
+// unioning avoids skipping them in RLS testing.
+func fetchTablesForRLS(ctx context.Context, baseURL string, opts RLSCheckOptions, identities []Identity) (tables []string, rejected []Identity, anyOK bool) {
+	seen := make(map[string]bool)
 	for _, identity := range identities {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, openapiURL, nil)
+		def, status, err := fetchOpenAPIForIdentity(ctx, baseURL, opts, identity)
 		if err != nil {
 			continue
 		}
-		applyRequestHeaders(req, opts.UserAgent, opts.Headers)
-		req.Header.Set("Accept", "application/json")
-		if identity.Token != "" {
-			req.Header.Set("apikey", identity.Token)
-			req.Header.Set("Authorization", "Bearer "+identity.Token)
-		}
-
-		client := &http.Client{Timeout: 15 * time.Second}
-		resp, err := client.Do(req)
-		if err != nil {
+		switch status {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			if identity.Token != "" {
+				rejected = append(rejected, identity)
+			}
 			continue
+		case http.StatusOK:
+			anyOK = true
+			for _, t := range extractTables(def) {
+				if !seen[t] {
+					seen[t] = true
+					tables = append(tables, t)
+				}
+			}
 		}
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			continue
-		}
-		var def openAPIDef
-		if err := json.NewDecoder(resp.Body).Decode(&def); err != nil {
-			resp.Body.Close()
-			continue
-		}
-		resp.Body.Close()
-		return &def, nil
 	}
-	return nil, fmt.Errorf("no identity could access OpenAPI endpoint")
+	return tables, rejected, anyOK
+}
+
+func fetchOpenAPIForIdentity(ctx context.Context, baseURL string, opts RLSCheckOptions, identity Identity) (*openAPIDef, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"rest/v1/", nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	applyRequestHeaders(req, opts.UserAgent, opts.Headers)
+	req.Header.Set("Accept", "application/json")
+	if identity.Token != "" {
+		req.Header.Set("apikey", identity.Token)
+		req.Header.Set("Authorization", "Bearer "+identity.Token)
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, nil
+	}
+	var def openAPIDef
+	if err := json.NewDecoder(resp.Body).Decode(&def); err != nil {
+		return nil, 0, err
+	}
+	return &def, resp.StatusCode, nil
 }
 
 func probeReadAccessRLS(ctx context.Context, baseURL, table string, identity Identity, opts RLSCheckOptions) bool {
@@ -238,9 +291,25 @@ func fetchRowIDs(ctx context.Context, baseURL, table string, identity Identity, 
 	return ids, len(rows)
 }
 
-func RLSFindings(results []RLSTableResult, projectURL string) []model.Finding {
+func RLSFindings(report *RLSReport, projectURL string) []model.Finding {
 	var findings []model.Finding
-	for _, result := range results {
+	for _, warning := range report.Warnings {
+		severity := "medium"
+		if strings.HasPrefix(warning, "cross-user RLS check skipped") {
+			severity = "low"
+		}
+		findings = append(findings, model.Finding{
+			ID:       "SUPA-RLS-WARN-001",
+			Title:    "RLS check coverage gap",
+			Severity: severity,
+			Category: "rls_access",
+			Evidence: model.Evidence{Source: "rls_check", URL: projectURL},
+			Impact:   warning,
+			Recommendation: "Verify the auth tokens are valid, unexpired, and issued for this project, then re-run the scan.",
+			Confidence:     "high",
+		})
+	}
+	for _, result := range report.Results {
 		anonAccess := result.Access["anon"]
 
 		if anonAccess.Writable {
@@ -261,10 +330,11 @@ func RLSFindings(results []RLSTableResult, projectURL string) []model.Finding {
 				projectURL, result.Table))
 		}
 
-		for name, access := range result.Access {
+		for _, name := range sortedIdentityNames(result.Access) {
 			if name == "anon" {
 				continue
 			}
+			access := result.Access[name]
 			if access.Writable && !anonAccess.Writable {
 				findings = append(findings, rlsFinding("SUPA-RLS-MED-001",
 					fmt.Sprintf("Authenticated write access to table %q (%s)", result.Table, name),
@@ -293,7 +363,7 @@ func RLSFindings(results []RLSTableResult, projectURL string) []model.Finding {
 					Recommendation: "Add RLS policies with auth.uid() = user_id for SELECT on user-scoped tables.",
 					Confidence:     "high",
 				})
-			} else if result.CrossUser.TotalA > 0 && result.CrossUser.TotalB > 0 {
+			} else if result.CrossUser.Isolated {
 				findings = append(findings, model.Finding{
 					ID:       "SUPA-RLS-INFO-001",
 					Title:    fmt.Sprintf("RLS isolation verified for table %q", result.Table),
@@ -314,6 +384,15 @@ func RLSFindings(results []RLSTableResult, projectURL string) []model.Finding {
 		}
 	}
 	return findings
+}
+
+func sortedIdentityNames(access map[string]TableAccess) []string {
+	names := make([]string, 0, len(access))
+	for name := range access {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func rlsFinding(id, title, severity, impact, recommendation, projectURL, table string) model.Finding {
