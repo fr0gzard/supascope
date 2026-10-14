@@ -107,7 +107,7 @@ func TestProbeRLSIntegration(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/rest/v1/" {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"paths":{"/profiles":{"get":{},"post":{}}}}`))
+			_, _ = w.Write([]byte(`{"paths":{"/profiles":{"get":{},"post":{}}},"definitions":{"profiles":{"required":["id"],"properties":{"id":{"type":"integer"},"bio":{"type":"string"}}}}}`))
 			return
 		}
 		if r.URL.Path == "/rest/v1/profiles" {

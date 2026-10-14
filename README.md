@@ -12,7 +12,7 @@ Authorized Supabase security reconnaissance scanner. Detects exposed keys, publi
 - **Key classification** — publishable keys, secret keys, legacy JWT anon/service-role keys, database URLs
 - **Safe JWT metadata** — decodes role, issuer, expiry, and project ref without signature verification
 - **Secret masking** — all secrets masked by default; `--unsafe-show-secrets` for raw values
-- **Active service probes** — REST, Auth, Storage, Realtime, Edge Functions, GraphQL (read-only)
+- **Active service probes** — REST, Auth, Storage, Realtime, Edge Functions, GraphQL. Write-access probes insert a single null row per writable table to confirm the finding.
 - **Auth settings inspection** — reports signup state, OAuth providers, anonymous sign-in
 - **Env leak detection** — probes common config paths (`.env`, `env.js`, `config.js`, etc.)
 - **REST table discovery** — enumerates tables via `/rest/v1/`, tests anonymous read/write access
@@ -151,6 +151,7 @@ CLI flags override config file values. Supported target fields: `target`
 - All secrets are masked by default. Use `--unsafe-show-secrets` only in trusted environments.
 - Active checks require explicit `--profile active` or `--profile deep`.
 - The scanner does not exploit vulnerabilities, dump database records, brute-force endpoints, or bypass authentication.
+- Write-access probes are minimally mutating: to confirm an INSERT finding, the scanner inserts a single row of NULLs into the writable table. Run them only against targets you are authorized to modify.
 
 ## Tech
 

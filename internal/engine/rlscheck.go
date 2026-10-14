@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	urlpkg "net/url"
 	"os"
 	"sort"
 	"strings"
@@ -56,7 +57,7 @@ func ProbeRLS(ctx context.Context, projectURL string, opts RLSCheckOptions) (*RL
 
 	allIdentities := append([]Identity{{Name: "anon", Token: opts.AnonKey}}, opts.Tokens...)
 
-	tables, rejected, anyOK := fetchTablesForRLS(ctx, projectURL, opts, allIdentities)
+	tables, columns, rejected, anyOK := fetchTablesForRLS(ctx, projectURL, opts, allIdentities)
 	if !anyOK {
 		return nil, fmt.Errorf("could not fetch REST OpenAPI with any identity")
 	}
@@ -105,7 +106,7 @@ func ProbeRLS(ctx context.Context, projectURL string, opts RLSCheckOptions) (*RL
 		for _, identity := range probeIdentities {
 			ta := TableAccess{Table: table}
 			ta.Readable = probeReadAccessRLS(ctx, projectURL, table, identity, opts)
-			ta.Writable = probeWriteAccessRLS(ctx, projectURL, table, identity, opts)
+			ta.Writable = probeWriteAccessRLS(ctx, projectURL, table, columns[table], identity, opts)
 			result.Access[identity.Name] = ta
 			debugRLS(opts.Debug, "table=%s identity=%s readable=%v writable=%v", table, identity.Name, ta.Readable, ta.Writable)
 		}
@@ -129,9 +130,12 @@ func ProbeRLS(ctx context.Context, projectURL string, opts RLSCheckOptions) (*RL
 
 // fetchTablesForRLS returns the union of tables visible to any identity, plus
 // the identities whose token was refused (HTTP 401/403). PostgREST scopes its
-// OpenAPI per role, so authenticated-only tables are invisible to anon;
-// unioning avoids skipping them in RLS testing.
-func fetchTablesForRLS(ctx context.Context, baseURL string, opts RLSCheckOptions, identities []Identity) (tables []string, rejected []Identity, anyOK bool) {
+// fetchTablesForRLS returns the union of tables visible to any identity -
+// PostgREST scopes the OpenAPI per role, so authenticated-only tables are
+// invisible to anon; unioning avoids skipping them in RLS testing. It also
+// returns per-table probe columns for the write check.
+func fetchTablesForRLS(ctx context.Context, baseURL string, opts RLSCheckOptions, identities []Identity) (tables []string, columns map[string][]string, rejected []Identity, anyOK bool) {
+	columns = make(map[string][]string)
 	seen := make(map[string]bool)
 	for _, identity := range identities {
 		def, status, err := fetchOpenAPIForIdentity(ctx, baseURL, opts, identity)
@@ -151,10 +155,13 @@ func fetchTablesForRLS(ctx context.Context, baseURL string, opts RLSCheckOptions
 					seen[t] = true
 					tables = append(tables, t)
 				}
+				if _, ok := columns[t]; !ok {
+					columns[t] = def.probeColumns(t)
+				}
 			}
 		}
 	}
-	return tables, rejected, anyOK
+	return tables, columns, rejected, anyOK
 }
 
 func fetchOpenAPIForIdentity(ctx context.Context, baseURL string, opts RLSCheckOptions, identity Identity) (*openAPIDef, int, error) {
@@ -206,27 +213,12 @@ func probeReadAccessRLS(ctx context.Context, baseURL, table string, identity Ide
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
-func probeWriteAccessRLS(ctx context.Context, baseURL, table string, identity Identity, opts RLSCheckOptions) bool {
-	url := baseURL + "rest/v1/" + table
-	body := []byte(`{"supascope_rls_probe":true}`)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
-	if err != nil {
-		return false
-	}
-	applyRequestHeaders(req, opts.UserAgent, opts.Headers)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Prefer", "return=minimal")
-	if identity.Token != "" {
-		req.Header.Set("apikey", identity.Token)
-		req.Header.Set("Authorization", "Bearer "+identity.Token)
-	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode >= 200 && resp.StatusCode < 300
+func probeWriteAccessRLS(ctx context.Context, baseURL, table string, columns []string, identity Identity, opts RLSCheckOptions) bool {
+	return probeTableWrite(ctx, baseURL, table, columns, identity.Token, writeProbeOpts{
+		UserAgent: opts.UserAgent,
+		Headers:   opts.Headers,
+		Debug:     opts.Debug,
+	}) == writeAllowed
 }
 
 func probeCrossUserIsolation(ctx context.Context, baseURL, table string, userA, userB Identity, opts RLSCheckOptions) *CrossUserResult {
@@ -255,7 +247,7 @@ func probeCrossUserIsolation(ctx context.Context, baseURL, table string, userA, 
 }
 
 func fetchRowIDs(ctx context.Context, baseURL, table string, identity Identity, opts RLSCheckOptions) ([]string, int) {
-	url := baseURL + "rest/v1/" + table + "?select=id&limit=20"
+	url := baseURL + "rest/v1/" + urlpkg.PathEscape(table) + "?select=id&limit=20"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, 0
@@ -316,7 +308,7 @@ func RLSFindings(report *RLSReport, projectURL string) []model.Finding {
 			findings = append(findings, rlsFinding("SUPA-RLS-CRIT-001",
 				fmt.Sprintf("Anonymous write access to table %q", result.Table),
 				"critical",
-				fmt.Sprintf("Anonymous users can insert rows into %q without authentication.", result.Table),
+				fmt.Sprintf("Anonymous users can insert rows into %q without authentication. The scanner inserted one null probe row to confirm this.", result.Table),
 				"Add restrictive RLS policies for INSERT/UPDATE or require authentication.",
 				projectURL, result.Table))
 		}

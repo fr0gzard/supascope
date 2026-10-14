@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -52,7 +54,7 @@ func TestProbeRestTablesIntegration(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/rest/v1/" {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"paths":{"/profiles":{"get":{},"post":{}},"/products":{"get":{}}}}`))
+			_, _ = w.Write([]byte(`{"paths":{"/profiles":{"get":{},"post":{}},"/products":{"get":{}}},"definitions":{"profiles":{"required":["id"],"properties":{"id":{"type":"integer"},"bio":{"type":"string"}}}}}`))
 			return
 		}
 		if r.URL.Path == "/rest/v1/profiles" && r.Method == http.MethodPost {
@@ -92,5 +94,56 @@ func TestProbeRestTablesIntegration(t *testing.T) {
 				t.Fatal("products should not be readable (403)")
 			}
 		}
+	}
+}
+
+func TestProbeTableWriteUsesRealColumns(t *testing.T) {
+	var gotBody []byte
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	def := &openAPIDef{Definitions: map[string]tableDefinition{
+		"widgets": {Required: []string{"id"}, Properties: map[string]any{"id": nil, "name": nil}},
+	}}
+	res := probeTableWrite(context.Background(), server.URL+"/", "widgets", def.probeColumns("widgets"), "", writeProbeOpts{})
+	if res != writeAllowed {
+		t.Fatalf("probeTableWrite = %v, want writeAllowed", res)
+	}
+	if gotPath != "/rest/v1/widgets" {
+		t.Fatalf("probed path = %q, want /rest/v1/widgets", gotPath)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(gotBody, &payload); err != nil {
+		t.Fatal(err)
+	}
+	// Real nullable column used, required pk omitted; no fake probe column.
+	if _, ok := payload["name"]; !ok {
+		t.Fatalf("expected real column 'name' in payload, got %v", payload)
+	}
+	if _, ok := payload["supascope_probe"]; ok {
+		t.Fatalf("fake probe column must not be sent, got %v", payload)
+	}
+	if _, ok := payload["id"]; ok {
+		t.Fatalf("required column 'id' should be omitted from the null probe, got %v", payload)
+	}
+}
+
+func TestProbeTableWriteDenials(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	if res := probeTableWrite(context.Background(), server.URL+"/", "t", []string{"a"}, "", writeProbeOpts{}); res != writeDenied {
+		t.Fatalf("probeTableWrite = %v, want writeDenied", res)
+	}
+	// No probe columns (unknown schema) is inconclusive, never a false positive.
+	if res := probeTableWrite(context.Background(), server.URL+"/", "t", nil, "", writeProbeOpts{}); res != writeInconclusive {
+		t.Fatalf("probeTableWrite = %v, want writeInconclusive", res)
 	}
 }
