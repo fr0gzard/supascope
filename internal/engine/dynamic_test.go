@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chromedp/cdproto/network"
 )
@@ -104,5 +105,39 @@ func TestNetworkCaptureDropsEmptyText(t *testing.T) {
 	cap.addObservation(networkObservation{Source: "dynamic_network", Text: "   "})
 	if got := cap.observationCount(); got != 0 {
 		t.Fatalf("expected empty-text observation to be dropped, got %d", got)
+	}
+}
+
+func TestTextualMime(t *testing.T) {
+	textual := []string{"", "text/html", "text/html; charset=utf-8", "application/json", "application/ld+json", "application/javascript", "text/css", "image/svg+xml", "application/xml"}
+	for _, m := range textual {
+		if !textualMime(m) {
+			t.Fatalf("expected textual for %q", m)
+		}
+	}
+	binary := []string{"image/png", "image/jpeg", "font/woff2", "video/mp4", "application/octet-stream", "application/pdf", "audio/mpeg"}
+	for _, m := range binary {
+		if textualMime(m) {
+			t.Fatalf("expected binary for %q", m)
+		}
+	}
+}
+
+func TestNetworkCaptureSkipsBinaryBodies(t *testing.T) {
+	cap := newNetworkCapture(false)
+	// Record an image response, then finish loading: no CDP body fetch should
+	// be attempted (no browser in unit tests) and no observation recorded.
+	cap.handle(context.Background(), &network.EventResponseReceived{
+		RequestID: "img1",
+		Response:  &network.Response{URL: "https://example.com/x.png", MimeType: "image/png", Status: 200},
+	})
+	before := cap.observationCount()
+	cap.handle(context.Background(), &network.EventLoadingFinished{RequestID: "img1"})
+	// The waitgroup was already Done() synchronously for skipped bodies.
+	if done := cap.waitForBodies(time.Second); !done {
+		t.Fatal("waitgroup should be released for skipped binary bodies")
+	}
+	if got := cap.observationCount(); got != before {
+		t.Fatalf("binary body should not add observations, got %d want %d", got, before)
 	}
 }

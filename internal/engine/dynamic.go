@@ -187,6 +187,11 @@ func openPageTargets(ctx context.Context) ([]target.ID, error) {
 	return ids, nil
 }
 
+// maxDynamicBodyBytes caps the total response-body bytes buffered during a
+// dynamic scan. Without it, a long headed session on a media-heavy app can
+// balloon into hundreds of MB of images, fonts, and video.
+const maxDynamicBodyBytes = 32 << 20
+
 // networkCapture accumulates network observations from one or more browser
 // target sessions. Attach mode listens on several tabs at once, so the state
 // lives here instead of in ScanDynamic's closures.
@@ -196,8 +201,10 @@ type networkCapture struct {
 	mu              sync.Mutex
 	wg              sync.WaitGroup
 	lastActivity    atomic.Int64
+	bufferedBytes   atomic.Int64
 	observations    []networkObservation
 	wsURLs          map[network.RequestID]string
+	mimeTypes       map[network.RequestID]string
 	acceptingBodies bool
 }
 
@@ -205,6 +212,7 @@ func newNetworkCapture(debug bool) *networkCapture {
 	c := &networkCapture{
 		debug:           debug,
 		wsURLs:          map[network.RequestID]string{},
+		mimeTypes:       map[network.RequestID]string{},
 		acceptingBodies: true,
 	}
 	c.lastActivity.Store(time.Now().UnixNano())
@@ -290,6 +298,9 @@ func (c *networkCapture) handle(ctx context.Context, event any) {
 			return
 		}
 		c.touchActivity()
+		c.mu.Lock()
+		c.mimeTypes[ev.RequestID] = ev.Response.MimeType
+		c.mu.Unlock()
 		detail := fmt.Sprintf("response %d %s", ev.Response.Status, ev.Response.URL)
 		c.addObservation(networkObservation{Source: "dynamic_network", URL: ev.Response.URL, Detail: detail, Text: ev.Response.URL})
 		c.addObservation(networkObservation{Source: "dynamic_network", URL: ev.Response.URL, Detail: detail, Text: headersText(ev.Response.Headers)})
@@ -301,14 +312,27 @@ func (c *networkCapture) handle(ctx context.Context, event any) {
 			c.mu.Unlock()
 			return
 		}
+		mime := c.mimeTypes[ev.RequestID]
+		delete(c.mimeTypes, ev.RequestID)
 		c.wg.Add(1)
 		c.mu.Unlock()
+		// Skip bodies we know are binary (images, fonts, video): they carry
+		// no scannable text and dominate memory usage.
+		if mime != "" && !textualMime(mime) {
+			c.wg.Done()
+			return
+		}
 		requestID := ev.RequestID
 		go func() {
 			defer c.wg.Done()
 			body, err := network.GetResponseBody(requestID).Do(ctx)
 			if err != nil {
 				debugDynamic(c.debug, "dynamic response body unavailable: request_id=%s err=%v", requestID, err)
+				return
+			}
+			if c.bufferedBytes.Add(int64(len(body))) > maxDynamicBodyBytes {
+				c.stopAcceptingBodies()
+				debugDynamic(c.debug, "dynamic body buffer cap (%d bytes) reached, skipping further bodies", maxDynamicBodyBytes)
 				return
 			}
 			c.addObservation(networkObservation{Source: "dynamic_network", Detail: "response body", Text: string(body)})
@@ -396,6 +420,25 @@ func captureBrowserStorage(ctx context.Context, pageURL string, debug bool) []ne
 	}
 
 	return observations
+}
+
+// textualMime reports whether a response body is worth buffering for
+// artifact scanning. Unknown/empty mime types are treated as textual;
+// only positively-identified binary types are skipped.
+func textualMime(mime string) bool {
+	mime = strings.ToLower(strings.TrimSpace(mime))
+	if mime == "" {
+		return true
+	}
+	if strings.HasPrefix(mime, "text/") {
+		return true
+	}
+	for _, sub := range []string{"json", "javascript", "xml", "ecmascript"} {
+		if strings.Contains(mime, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 func networkObservationsToDiscoveries(observations []networkObservation) []model.Discovery {
