@@ -392,3 +392,25 @@ func TestEnvLeakChecksProbesAppOriginNotAPIHosts(t *testing.T) {
 		t.Fatalf("discovery from wrong origin: %q", got[0].Value)
 	}
 }
+
+func TestSupabaseTableNamesDedupesAndCaps(t *testing.T) {
+	var discoveries []model.Discovery
+	for i := 0; i < 40; i++ {
+		discoveries = append(discoveries, model.Discovery{Type: "supabase_table", Value: "t"})
+		discoveries = append(discoveries, model.Discovery{Type: "supabase_table", Value: "u"})
+	}
+	discoveries = append(discoveries, model.Discovery{Type: "supabase_url", Value: "https://x.supabase.co"})
+	got := supabaseTableNames(discoveries)
+	if len(got) != 2 || got[0] != "t" || got[1] != "u" {
+		t.Fatalf("supabaseTableNames = %v", got)
+	}
+
+	// Cap at 32.
+	discoveries = nil
+	for i := 0; i < 50; i++ {
+		discoveries = append(discoveries, model.Discovery{Type: "supabase_table", Value: "table_" + string(rune('a'+i))})
+	}
+	if got := supabaseTableNames(discoveries); len(got) != 32 {
+		t.Fatalf("expected cap of 32, got %d", len(got))
+	}
+}

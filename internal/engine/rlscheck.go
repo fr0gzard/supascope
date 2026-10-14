@@ -26,6 +26,9 @@ type RLSCheckOptions struct {
 	Tokens    []Identity
 	Debug     bool
 	Delay     time.Duration
+	// FallbackTables are probed when the REST OpenAPI spec is unavailable.
+	// Write checks are inconclusive for them (no column definitions).
+	FallbackTables []string
 }
 
 type RLSTableResult struct {
@@ -48,6 +51,9 @@ type CrossUserResult struct {
 type RLSReport struct {
 	Results  []RLSTableResult
 	Warnings []string
+	// UsedFallbackTables is set when the REST OpenAPI spec was unavailable
+	// and tables came from FallbackTables instead.
+	UsedFallbackTables bool
 }
 
 func ProbeRLS(ctx context.Context, projectURL string, opts RLSCheckOptions) (*RLSReport, error) {
@@ -58,11 +64,19 @@ func ProbeRLS(ctx context.Context, projectURL string, opts RLSCheckOptions) (*RL
 	allIdentities := append([]Identity{{Name: "anon", Token: opts.AnonKey}}, opts.Tokens...)
 
 	tables, columns, rejected, anyOK := fetchTablesForRLS(ctx, projectURL, opts, allIdentities)
-	if !anyOK {
+	report := &RLSReport{}
+	if len(tables) == 0 && len(opts.FallbackTables) > 0 {
+		// The REST OpenAPI spec was unavailable (or listed nothing); fall
+		// back to table names recovered from the app's JavaScript.
+		tables = opts.FallbackTables
+		report.UsedFallbackTables = true
+	}
+	if !anyOK && len(tables) == 0 {
 		return nil, fmt.Errorf("could not fetch REST OpenAPI with any identity")
 	}
-
-	report := &RLSReport{}
+	if len(tables) == 0 {
+		return nil, fmt.Errorf("no tables enumerated and no fallback tables available")
+	}
 	rejectedSet := make(map[string]bool, len(rejected))
 	for _, id := range rejected {
 		rejectedSet[id.Name] = true
@@ -285,6 +299,9 @@ func fetchRowIDs(ctx context.Context, baseURL, table string, identity Identity, 
 
 func RLSFindings(report *RLSReport, projectURL string) []model.Finding {
 	var findings []model.Finding
+	if report.UsedFallbackTables {
+		findings = append(findings, RLSOpenAPIWarning(projectURL, len(report.Results)))
+	}
 	for _, warning := range report.Warnings {
 		severity := "medium"
 		if strings.HasPrefix(warning, "cross-user RLS check skipped") {
@@ -376,6 +393,25 @@ func RLSFindings(report *RLSReport, projectURL string) []model.Finding {
 		}
 	}
 	return findings
+}
+
+// RLSOpenAPIWarning builds the coverage finding for when the REST OpenAPI
+// spec was unavailable.
+func RLSOpenAPIWarning(projectURL string, fallbackCount int) model.Finding {
+	detail := "The REST OpenAPI spec (/rest/v1/) was unavailable, so no tables could be enumerated and RLS checks were skipped."
+	if fallbackCount > 0 {
+		detail = fmt.Sprintf("The REST OpenAPI spec (/rest/v1/) was unavailable; checked %d table names recovered from the app's JavaScript instead. Write-access checks are inconclusive without the API schema.", fallbackCount)
+	}
+	return model.Finding{
+		ID:             "SUPA-RLS-WARN-002",
+		Title:          "REST OpenAPI unavailable: RLS coverage reduced",
+		Severity:       "info",
+		Category:       "coverage",
+		Evidence:       model.Evidence{Source: "rls_check", URL: projectURL + "/rest/v1/", Detail: detail},
+		Impact:         detail,
+		Recommendation: "If you control the target, expose the PostgREST OpenAPI spec; otherwise re-run with scan url/browser so table names can be recovered from the app's JavaScript.",
+		Confidence:     "high",
+	}
 }
 
 func sortedIdentityNames(access map[string]TableAccess) []string {

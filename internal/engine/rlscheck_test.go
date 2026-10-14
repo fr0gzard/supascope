@@ -353,3 +353,58 @@ func TestProbeRLSUnionsTablesAcrossIdentities(t *testing.T) {
 		t.Fatalf("expected union of anon+authed tables, got %d: %#v", len(report.Results), report.Results)
 	}
 }
+
+func TestProbeRLSFallsBackToNamedTables(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// OpenAPI disabled: every identity gets 404.
+		if r.URL.Path == "/rest/v1/" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Path == "/rest/v1/widgets" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"id":1}]`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	report, err := ProbeRLS(context.Background(), server.URL+"/", RLSCheckOptions{
+		FallbackTables: []string{"widgets"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.UsedFallbackTables {
+		t.Fatal("expected UsedFallbackTables")
+	}
+	if len(report.Results) != 1 || report.Results[0].Table != "widgets" {
+		t.Fatalf("unexpected results: %#v", report.Results)
+	}
+	if !report.Results[0].Access["anon"].Readable {
+		t.Fatal("widgets should be readable by anon")
+	}
+
+	findings := RLSFindings(report, server.URL+"/")
+	found := false
+	for _, f := range findings {
+		if f.ID == "SUPA-RLS-WARN-002" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected SUPA-RLS-WARN-002 fallback warning, got %v", findings)
+	}
+}
+
+func TestProbeRLSErrorsWithoutTablesOrFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	if _, err := ProbeRLS(context.Background(), server.URL+"/", RLSCheckOptions{}); err == nil {
+		t.Fatal("expected error when OpenAPI is unavailable and no fallback tables exist")
+	}
+}

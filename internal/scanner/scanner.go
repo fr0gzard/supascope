@@ -353,21 +353,53 @@ func authSettingsFindings(ctx context.Context, discoveries []model.Discovery, op
 
 func restTableAccessFindings(ctx context.Context, discoveries []model.Discovery, opts model.Options) []model.Finding {
 	key := activeKey(discoveries, opts.Key)
+	fallbackTables := supabaseTableNames(discoveries)
 	var findings []model.Finding
 	for _, projectURL := range supabaseProjectURLs(discoveries, opts.Target) {
-		access, err := engine.ProbeRestTables(ctx, projectURL, engine.RestCheckOptions{
+		restOpts := engine.RestCheckOptions{
 			UserAgent: opts.UserAgent,
 			Headers:   opts.Headers,
 			Key:       key,
 			Debug:     opts.Debug,
 			Delay:     opts.Delay,
-		})
-		if err != nil {
-			continue
+		}
+		access, err := engine.ProbeRestTables(ctx, projectURL, restOpts)
+		if err != nil || len(access) == 0 {
+			// The REST OpenAPI spec was unavailable (or listed nothing).
+			// Fall back to table names recovered from JavaScript, if any.
+			if len(fallbackTables) == 0 {
+				findings = append(findings, engine.RestOpenAPIWarning(projectURL, 0))
+				continue
+			}
+			access, err = engine.ProbeRestTablesNamed(ctx, projectURL, fallbackTables, restOpts)
+			if err != nil || len(access) == 0 {
+				findings = append(findings, engine.RestOpenAPIWarning(projectURL, 0))
+				continue
+			}
+			findings = append(findings, engine.RestOpenAPIWarning(projectURL, len(fallbackTables)))
 		}
 		findings = append(findings, engine.RestAccessFindings(access, projectURL)...)
 	}
 	return findings
+}
+
+// supabaseTableNames collects table names recovered from JavaScript
+// (supabase-js .from('...') calls), deduplicated and capped: each one becomes
+// probe traffic in active scans.
+func supabaseTableNames(discoveries []model.Discovery) []string {
+	seen := map[string]bool{}
+	var tables []string
+	for _, d := range discoveries {
+		if d.Type != "supabase_table" || d.Value == "" || seen[d.Value] {
+			continue
+		}
+		seen[d.Value] = true
+		tables = append(tables, d.Value)
+		if len(tables) >= 32 {
+			break
+		}
+	}
+	return tables
 }
 
 func storageBucketFindings(ctx context.Context, discoveries []model.Discovery, opts model.Options) []model.Finding {
@@ -401,14 +433,16 @@ func rlsCheckFindings(ctx context.Context, discoveries []model.Discovery, opts m
 	var findings []model.Finding
 	for _, projectURL := range supabaseProjectURLs(discoveries, opts.Target) {
 		results, err := engine.ProbeRLS(ctx, projectURL, engine.RLSCheckOptions{
-			UserAgent: opts.UserAgent,
-			Headers:   opts.Headers,
-			AnonKey:   key,
-			Tokens:    tokens,
-			Debug:     opts.Debug,
-			Delay:     opts.Delay,
+			UserAgent:      opts.UserAgent,
+			Headers:        opts.Headers,
+			AnonKey:        key,
+			Tokens:         tokens,
+			Debug:          opts.Debug,
+			Delay:          opts.Delay,
+			FallbackTables: supabaseTableNames(discoveries),
 		})
 		if err != nil {
+			findings = append(findings, engine.RLSOpenAPIWarning(projectURL, 0))
 			continue
 		}
 		findings = append(findings, engine.RLSFindings(results, projectURL)...)

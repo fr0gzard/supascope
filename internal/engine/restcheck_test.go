@@ -147,3 +147,50 @@ func TestProbeTableWriteDenials(t *testing.T) {
 		t.Fatalf("probeTableWrite = %v, want writeInconclusive", res)
 	}
 }
+
+func TestProbeRestTablesNamedWithoutOpenAPI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// No /rest/v1/ OpenAPI route at all: spec unavailable.
+		if r.URL.Path == "/rest/v1/widgets" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"id":1}]`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	access, err := ProbeRestTablesNamed(context.Background(), server.URL+"/", []string{"widgets", "ghost"}, RestCheckOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(access) != 2 {
+		t.Fatalf("expected 2 tables, got %d", len(access))
+	}
+	for _, ta := range access {
+		switch ta.Table {
+		case "widgets":
+			if !ta.Readable {
+				t.Fatal("widgets should be readable")
+			}
+			if ta.Writable {
+				t.Fatal("widgets write should be inconclusive without column definitions")
+			}
+		case "ghost":
+			if ta.Readable || ta.Writable {
+				t.Fatal("ghost should not be readable/writable (404)")
+			}
+		}
+	}
+}
+
+func TestRestOpenAPIWarning(t *testing.T) {
+	w := RestOpenAPIWarning("https://x.supabase.co", 0)
+	if w.ID != "SUPA-REST-WARN-001" {
+		t.Fatalf("warning ID = %q", w.ID)
+	}
+	w = RestOpenAPIWarning("https://x.supabase.co", 3)
+	if w.ID != "SUPA-REST-WARN-001" {
+		t.Fatalf("fallback warning ID = %q", w.ID)
+	}
+}
