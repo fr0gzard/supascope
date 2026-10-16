@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -630,10 +631,7 @@ func sourceCategory(discovery model.Discovery) sourceInfo {
 }
 
 func fingerprintServices(discoveries []model.Discovery) model.ServiceMap {
-	services := model.ServiceMap{
-		REST: model.ServiceNotObserved, Auth: model.ServiceNotObserved, Storage: model.ServiceNotObserved,
-		Realtime: model.ServiceNotObserved, Functions: model.ServiceNotObserved, GraphQL: model.ServiceNotObserved,
-	}
+	services := emptyServiceMap()
 	for _, discovery := range discoveries {
 		haystack := discovery.Value
 		if discovery.Evidence != nil {
@@ -718,7 +716,7 @@ func dedupeDiscoveries(discoveries []model.Discovery) []model.Discovery {
 		if discovery.Evidence != nil {
 			line, file, url = discovery.Evidence.Line, discovery.Evidence.File, discovery.Evidence.URL
 		}
-		key := strings.Join([]string{discovery.Type, discovery.Value, discovery.Source, file, url, string(rune(line))}, "\x00")
+		key := strings.Join([]string{discovery.Type, discovery.Value, discovery.Source, file, url, strconv.Itoa(line)}, "\x00")
 		if seen[key] {
 			continue
 		}

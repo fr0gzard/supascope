@@ -24,12 +24,9 @@ type RestCheckOptions struct {
 }
 
 type TableAccess struct {
-	Table     string
-	HasGet    bool
-	HasPost   bool
-	Readable  bool
-	Writable  bool
-	ScanError string
+	Table    string
+	Readable bool
+	Writable bool
 }
 
 func ProbeRestTables(ctx context.Context, projectURL string, opts RestCheckOptions) ([]TableAccess, error) {
@@ -76,16 +73,6 @@ func probeNamedTables(ctx context.Context, projectURL string, tables []string, o
 			return access, err
 		}
 		ta := TableAccess{Table: table}
-		if openapi != nil {
-			if methods, ok := openapi.Paths["/"+table]; ok {
-				if _, exists := methods["get"]; exists {
-					ta.HasGet = true
-				}
-				if _, exists := methods["post"]; exists {
-					ta.HasPost = true
-				}
-			}
-		}
 		ta.Readable = probeReadAccess(ctx, projectURL, table, opts)
 		ta.Writable = probeWriteAccess(ctx, projectURL, table, openapi, opts)
 		access = append(access, ta)
