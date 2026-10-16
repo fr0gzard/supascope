@@ -56,9 +56,6 @@ func ProbeRestTables(ctx context.Context, projectURL string, opts RestCheckOptio
 // (PostgREST openapi-mode=disabled): read checks work as normal, but write
 // checks are inconclusive without column definitions.
 func ProbeRestTablesNamed(ctx context.Context, projectURL string, tables []string, opts RestCheckOptions) ([]TableAccess, error) {
-	if !strings.HasSuffix(projectURL, "/") {
-		projectURL += "/"
-	}
 	if len(tables) == 0 {
 		return nil, nil
 	}
@@ -66,6 +63,9 @@ func ProbeRestTablesNamed(ctx context.Context, projectURL string, tables []strin
 }
 
 func probeNamedTables(ctx context.Context, projectURL string, tables []string, openapi *openAPIDef, opts RestCheckOptions) ([]TableAccess, error) {
+	if !strings.HasSuffix(projectURL, "/") {
+		projectURL += "/"
+	}
 	if opts.Delay <= 0 {
 		opts.Delay = 200 * time.Millisecond
 	}
@@ -103,18 +103,22 @@ func probeNamedTables(ctx context.Context, projectURL string, tables []string, o
 }
 
 // RestOpenAPIWarning builds the coverage finding for when the REST OpenAPI
-// spec was unavailable.
+// spec was unavailable during the REST table-access check.
 func RestOpenAPIWarning(projectURL string, fallbackCount int) model.Finding {
-	detail := "The REST OpenAPI spec (/rest/v1/) was unavailable, so no tables could be enumerated and REST table checks were skipped."
+	return openAPIWarning("SUPA-REST-WARN-001", "REST OpenAPI unavailable: table coverage reduced", "rest_check", projectURL, fallbackCount)
+}
+
+func openAPIWarning(id, title, source, projectURL string, fallbackCount int) model.Finding {
+	detail := "The REST OpenAPI spec (/rest/v1/) was unavailable, so no tables could be enumerated and table checks were skipped."
 	if fallbackCount > 0 {
-		detail = fmt.Sprintf("The REST OpenAPI spec (/rest/v1/) was unavailable; probed %d table names recovered from the app's JavaScript instead. Write-access checks are inconclusive without the API schema.", fallbackCount)
+		detail = fmt.Sprintf("The REST OpenAPI spec (/rest/v1/) was unavailable; checked %d table names recovered from the app's JavaScript instead. Write-access checks are inconclusive without the API schema.", fallbackCount)
 	}
 	return model.Finding{
-		ID:             "SUPA-REST-WARN-001",
-		Title:          "REST OpenAPI unavailable: table coverage reduced",
+		ID:             id,
+		Title:          title,
 		Severity:       "info",
 		Category:       "coverage",
-		Evidence:       model.Evidence{Source: "rest_check", URL: projectURL + "/rest/v1/", Detail: detail},
+		Evidence:       model.Evidence{Source: source, URL: projectURL + "/rest/v1/", Detail: detail},
 		Impact:         detail,
 		Recommendation: "If you control the target, expose the PostgREST OpenAPI spec; otherwise re-run with scan url/browser so table names can be recovered from the app's JavaScript.",
 		Confidence:     "high",

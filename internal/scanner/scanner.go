@@ -367,10 +367,6 @@ func restTableAccessFindings(ctx context.Context, discoveries []model.Discovery,
 		if err != nil || len(access) == 0 {
 			// The REST OpenAPI spec was unavailable (or listed nothing).
 			// Fall back to table names recovered from JavaScript, if any.
-			if len(fallbackTables) == 0 {
-				findings = append(findings, engine.RestOpenAPIWarning(projectURL, 0))
-				continue
-			}
 			access, err = engine.ProbeRestTablesNamed(ctx, projectURL, fallbackTables, restOpts)
 			if err != nil || len(access) == 0 {
 				findings = append(findings, engine.RestOpenAPIWarning(projectURL, 0))

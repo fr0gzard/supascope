@@ -398,20 +398,7 @@ func RLSFindings(report *RLSReport, projectURL string) []model.Finding {
 // RLSOpenAPIWarning builds the coverage finding for when the REST OpenAPI
 // spec was unavailable.
 func RLSOpenAPIWarning(projectURL string, fallbackCount int) model.Finding {
-	detail := "The REST OpenAPI spec (/rest/v1/) was unavailable, so no tables could be enumerated and RLS checks were skipped."
-	if fallbackCount > 0 {
-		detail = fmt.Sprintf("The REST OpenAPI spec (/rest/v1/) was unavailable; checked %d table names recovered from the app's JavaScript instead. Write-access checks are inconclusive without the API schema.", fallbackCount)
-	}
-	return model.Finding{
-		ID:             "SUPA-RLS-WARN-002",
-		Title:          "REST OpenAPI unavailable: RLS coverage reduced",
-		Severity:       "info",
-		Category:       "coverage",
-		Evidence:       model.Evidence{Source: "rls_check", URL: projectURL + "/rest/v1/", Detail: detail},
-		Impact:         detail,
-		Recommendation: "If you control the target, expose the PostgREST OpenAPI spec; otherwise re-run with scan url/browser so table names can be recovered from the app's JavaScript.",
-		Confidence:     "high",
-	}
+	return openAPIWarning("SUPA-RLS-WARN-002", "REST OpenAPI unavailable: RLS coverage reduced", "rls_check", projectURL, fallbackCount)
 }
 
 func sortedIdentityNames(access map[string]TableAccess) []string {
